@@ -6,6 +6,7 @@ import {
 import { BaseCalendarView, VIEW_TYPE_BASE_CALENDAR } from './calendar-view';
 import { BaseKanbanView, VIEW_TYPE_BASE_KANBAN } from './kanban-view';
 import { BaseViewsSettings, DEFAULT_SETTINGS, BaseViewsSettingTab, migrateSettings } from './settings';
+import { QuickAddModal } from './quick-add-modal';
 
 class DisabledView extends BasesView {
   readonly type: string;
@@ -248,6 +249,16 @@ export default class BaseViewsPlugin extends Plugin {
     });
 
     this.addSettingTab(new BaseViewsSettingTab(this.app, this));
+
+    this.addRibbonIcon('plus-circle', 'Quick add to base', () => {
+      new QuickAddModal(this.app, this.settings, this).open();
+    });
+
+    this.addCommand({
+      id: 'quick-add-to-base',
+      name: 'Quick add to base',
+      callback: () => new QuickAddModal(this.app, this.settings, this).open(),
+    });
   }
 
   onunload() {
