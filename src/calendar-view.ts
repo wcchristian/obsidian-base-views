@@ -1,4 +1,4 @@
-import { BasesView, TFile, Notice, QueryController, HoverParent, HoverPopover, Keymap, BasesEntry, BasesPropertyId, parsePropertyId, Value, BooleanValue, StringValue, NumberValue, DateValue, TagValue, NullValue, Menu, App, Modal } from 'obsidian';
+import { BasesView, TFile, Notice, QueryController, HoverParent, HoverPopover, Keymap, BasesEntry, BasesPropertyId, parsePropertyId, Value, BooleanValue, StringValue, NumberValue, DateValue, TagValue, NullValue, Menu, App, Modal, Platform } from 'obsidian';
 import BaseViewsPlugin from './main';
 
 export const VIEW_TYPE_BASE_CALENDAR = 'base-calendar-view';
@@ -39,7 +39,6 @@ const DK = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,
 const MS_PER_DAY = 86400000;
 const LANE_HEIGHT = 16;
 const LANE_GAP = 2;
-const AGENDA_RANGE_DAYS = 30;
 
 class DatePromptModal extends Modal {
 	private resolvePromise: ((d: Date | null) => void) | null = null;
@@ -101,6 +100,9 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 	private propOrder: BasesPropertyId[] = [];
 	private plugin: BaseViewsPlugin;
 	private maxPerDay = 3;
+	private monthExpand = false;
+	private agendaDays = 30;
+	private sortMode: 'manual' | 'titleAsc' | 'titleDesc' | 'startAsc' | 'startDesc' = 'manual';
 	private grouped = false;
 
 	private dragOrderId: string | null = null;
@@ -136,6 +138,13 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 		}
 		const mpd = this.config.get('maxPerDay');
 		if (typeof mpd === 'number' && mpd >= 1) this.maxPerDay = Math.floor(mpd);
+		this.monthExpand = !!this.config.get('monthExpand');
+		const ad = this.config.get('agendaDays');
+		if (typeof ad === 'number' && ad >= 1) this.agendaDays = Math.min(30, Math.floor(ad));
+		const sm = this.config.get('sortMode');
+		if (sm === 'manual' || sm === 'titleAsc' || sm === 'titleDesc' || sm === 'startAsc' || sm === 'startDesc') {
+			this.sortMode = sm;
+		}
 
 		this.buildUI(this.wrap);
 		await this.loadData();
@@ -153,6 +162,7 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 
 	private buildUI(container: HTMLElement) {
 		container.addClass('bc-wrap');
+		if (Platform.isMobile) container.addClass('bc-mobile');
 
 		const hdr = container.createDiv('bc-hdr');
 		const nav = hdr.createDiv('bc-nav');
@@ -180,13 +190,13 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 		prev.onclick = () => {
 			if (this.viewMode === 'month') this.curDate = new Date(this.curDate.getFullYear(), this.curDate.getMonth() - 1, 1);
 			else if (this.viewMode === 'week') this.curDate = new Date(this.curDate.getTime() - 7 * MS_PER_DAY);
-			else this.curDate = new Date(this.curDate.getTime() - AGENDA_RANGE_DAYS * MS_PER_DAY);
+			else this.curDate = new Date(this.curDate.getTime() - this.agendaDays * MS_PER_DAY);
 			this.render();
 		};
 		next.onclick = () => {
 			if (this.viewMode === 'month') this.curDate = new Date(this.curDate.getFullYear(), this.curDate.getMonth() + 1, 1);
 			else if (this.viewMode === 'week') this.curDate = new Date(this.curDate.getTime() + 7 * MS_PER_DAY);
-			else this.curDate = new Date(this.curDate.getTime() + AGENDA_RANGE_DAYS * MS_PER_DAY);
+			else this.curDate = new Date(this.curDate.getTime() + this.agendaDays * MS_PER_DAY);
 			this.render();
 		};
 		today.onclick = () => { this.curDate = new Date(); this.render(); };
@@ -223,7 +233,7 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 			this.clearSelectionHighlight();
 			const startDate = start?.date;
 			const endDate = start !== end ? (end?.date ?? null) : null;
-			if (startDate) {
+			if (startDate && endDate) {
 				await this.createNote(startDate, endDate);
 			}
 			this.selectionStart = null;
@@ -276,10 +286,12 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 		this.bodyEl.removeClass('bc-body-month');
 		this.bodyEl.removeClass('bc-body-week');
 		this.bodyEl.removeClass('bc-body-agenda');
+		this.bodyEl.removeClass('bc-body-month-expand');
 		this.hrowEl.style.display = '';
 
 		if (this.viewMode === 'month') {
 			this.bodyEl.addClass('bc-body-month');
+			if (this.monthExpand) this.bodyEl.addClass('bc-body-month-expand');
 			this.renderMonth();
 		} else if (this.viewMode === 'week') {
 			this.bodyEl.addClass('bc-body-week');
@@ -357,12 +369,12 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 		if (!this.titleEl || !this.bodyEl) return;
 		const today = new Date(); today.setHours(0,0,0,0);
 		const start = new Date(this.curDate); start.setHours(0,0,0,0);
-		const end = new Date(start.getTime() + (AGENDA_RANGE_DAYS - 1) * MS_PER_DAY);
+		const end = new Date(start.getTime() + (this.agendaDays - 1) * MS_PER_DAY);
 
 		const fmt = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 		this.titleEl.textContent = `${fmt(start)} — ${fmt(end)}, ${end.getFullYear()}`;
 
-		for (let i = 0; i < AGENDA_RANGE_DAYS; i++) {
+		for (let i = 0; i < this.agendaDays; i++) {
 			const dt = new Date(start.getTime() + i * MS_PER_DAY); dt.setHours(0,0,0,0);
 			const dk = DK(dt);
 			const isT = dt.getTime() === today.getTime();
@@ -372,6 +384,13 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 			header.createSpan({ cls: 'bc-agenda-num', text: String(dt.getDate()) });
 			header.createSpan({ cls: 'bc-agenda-mon', text: dt.toLocaleDateString('en-US', { month: 'short' }) });
 			const list = section.createDiv('bc-agenda-list');
+			const addBtn = section.createEl('button', { cls: 'bc-add bc-add-agenda', attr: { 'aria-label': 'Add note for this day', title: 'Add note for this day', type: 'button' } });
+			addBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>';
+			addBtn.onclick = e => {
+				e.preventDefault();
+				e.stopPropagation();
+				this.createNote(dt, null);
+			};
 			const info: DayInfo = {
 				dateKey: dk, date: dt, weekIdx: 0, colIdx: 0,
 				isCurrentMonth: true, isToday: isT, events: [],
@@ -387,6 +406,14 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 		const isT = dt.getTime() === today.getTime();
 		const cell = parent.createDiv('bc-cell' + (cur ? '' : ' bc-other') + (isT ? ' bc-today' : ''));
 		const num = cell.createEl('span', { cls: 'bc-num', text: String(dt.getDate()) });
+		const addBtn = cell.createEl('button', { cls: 'bc-add', attr: { 'aria-label': 'Add note for this day', title: 'Add note for this day', type: 'button' } });
+		addBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>';
+		addBtn.onclick = e => {
+			e.preventDefault();
+			e.stopPropagation();
+			this.createNote(dt, null);
+		};
+		addBtn.addEventListener('mousedown', e => { e.stopPropagation(); });
 		const el = cell.createDiv('bc-evs');
 		const info: DayInfo = { dateKey: dk, date: dt, weekIdx: w, colIdx: c, isCurrentMonth: cur, isToday: isT, events: [], cell, numEl: num, evList: el };
 		this.days.push(info);
@@ -398,6 +425,7 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 			if ((e.target as HTMLElement).closest('.bc-chip')) return;
 			if ((e.target as HTMLElement).closest('.bc-md-bar')) return;
 			if ((e.target as HTMLElement).closest('.bc-more')) return;
+			if ((e.target as HTMLElement).closest('.bc-add')) return;
 			this.isSelecting = true;
 			this.selectionStart = info;
 			this.selectionEnd = info;
@@ -408,6 +436,15 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 				this.selectionEnd = info;
 				this.updateSelectionHighlight();
 			}
+		});
+		cell.addEventListener('dblclick', e => {
+			if ((e.target as HTMLElement).closest('.bc-chip')) return;
+			if ((e.target as HTMLElement).closest('.bc-md-bar')) return;
+			if ((e.target as HTMLElement).closest('.bc-more')) return;
+			if ((e.target as HTMLElement).closest('.bc-add')) return;
+			e.preventDefault();
+			e.stopPropagation();
+			this.createNote(dt, null);
 		});
 		return info;
 	}
@@ -474,20 +511,24 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 			d.evList.empty();
 			let evs = singleDayByDate.get(d.dateKey) ?? [];
 
-			const order = this.plugin.settings.localOrder[d.dateKey];
-			if (order && order.length > 0) {
-				const out: CalEvent[] = [];
-				const remaining = [...evs];
-				for (const id of order) {
-					const idx = remaining.findIndex(e => e.id === id);
-					if (idx !== -1) out.push(remaining.splice(idx, 1)[0]);
+			if (this.sortMode === 'manual') {
+				const order = this.plugin.settings.localOrder[d.dateKey];
+				if (order && order.length > 0) {
+					const out: CalEvent[] = [];
+					const remaining = [...evs];
+					for (const id of order) {
+						const idx = remaining.findIndex(e => e.id === id);
+						if (idx !== -1) out.push(remaining.splice(idx, 1)[0]);
+					}
+					evs = [...out, ...remaining];
 				}
-				evs = [...out, ...remaining];
+			} else {
+				evs = this.sortEvents(evs);
 			}
 
 			d.events = evs;
 
-			if (this.viewMode === 'month' && evs.length > this.maxPerDay) {
+			if (this.viewMode === 'month' && !this.monthExpand && evs.length > this.maxPerDay) {
 				const visible = evs.slice(0, this.maxPerDay - 1);
 				this.renderDayChips(d.evList, visible);
 				const more = d.evList.createDiv('bc-more');
@@ -535,6 +576,25 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 				if (d.evList) d.evList.style.paddingTop = `${overlayHeight + 4}px`;
 			});
 		});
+	}
+
+	private sortEvents(evs: CalEvent[]): CalEvent[] {
+		const out = [...evs];
+		switch (this.sortMode) {
+			case 'titleAsc':
+				out.sort((a, b) => a.title.localeCompare(b.title));
+				break;
+			case 'titleDesc':
+				out.sort((a, b) => b.title.localeCompare(a.title));
+				break;
+			case 'startAsc':
+				out.sort((a, b) => a.start.getTime() - b.start.getTime() || a.title.localeCompare(b.title));
+				break;
+			case 'startDesc':
+				out.sort((a, b) => b.start.getTime() - a.start.getTime() || a.title.localeCompare(b.title));
+				break;
+		}
+		return out;
 	}
 
 	private renderDayChips(parent: HTMLElement, evs: CalEvent[]) {
@@ -934,7 +994,11 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 			const id = e.dataTransfer?.getData('text/plain');
 			if (!id) return;
 			if (this.dragSourceDateKey === info.dateKey) {
-				await this.reorderEvent(id, listEl);
+				if (this.sortMode === 'manual') {
+					await this.reorderEvent(id, listEl);
+				} else {
+					this.removeDropIndicator();
+				}
 			} else {
 				this.removeDropIndicator();
 				await this.moveEvent(id, info.date);
