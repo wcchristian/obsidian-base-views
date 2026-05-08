@@ -7,12 +7,25 @@ export interface ColorGroup {
   colors: Record<string, string>;
 }
 
+export interface QuickAddProp {
+  name: string;   // frontmatter key, e.g. "date", "project"
+  value: string;  // "today" → YYYY-MM-DD, "" → user prompted, anything else → literal
+}
+
+export interface QuickAddProfile {
+  id: string;             // Date.now().toString() on creation
+  name: string;           // display name, e.g. "Work Notes"
+  folder: string;         // vault-relative folder path, "" = vault root
+  props: QuickAddProp[];
+}
+
 export interface BaseViewsSettings {
   enableCalendar: boolean;
   enableKanban: boolean;
   enableTimeline: boolean;
   colorGroups: ColorGroup[];
   localOrder: Record<string, string[]>;
+  quickAddProfiles: QuickAddProfile[];
 }
 
 export const DEFAULT_SETTINGS: BaseViewsSettings = {
@@ -22,7 +35,8 @@ export const DEFAULT_SETTINGS: BaseViewsSettings = {
   colorGroups: [
     { name: 'Project', propertyName: 'project', colors: {} }
   ],
-  localOrder: {}
+  localOrder: {},
+  quickAddProfiles: [],
 };
 
 export function migrateSettings(raw: any): BaseViewsSettings {
@@ -31,7 +45,8 @@ export function migrateSettings(raw: any): BaseViewsSettings {
     enableKanban: raw?.enableKanban !== false,
     enableTimeline: raw?.enableTimeline !== false,
     colorGroups: raw?.colorGroups,
-    localOrder: raw?.localOrder ?? {}
+    localOrder: raw?.localOrder ?? {},
+    quickAddProfiles: Array.isArray(raw?.quickAddProfiles) ? raw.quickAddProfiles : [],
   } as BaseViewsSettings;
 
   if (!Array.isArray(out.colorGroups) || out.colorGroups.length === 0) {
@@ -116,6 +131,32 @@ export class BaseViewsSettingTab extends PluginSettingTab {
           this.display();
         });
       });
+
+    // ── Quick Add profiles ─────────────────────────────
+    containerEl.createEl('h3', { text: 'Quick Add' });
+    containerEl.createEl('p', {
+      text: 'Configure profiles for the Quick Add ribbon button and command. Each profile defines a target folder and frontmatter properties to auto-fill. Set a property value to "today" for today\'s date, leave blank to prompt each time, or type any literal value.',
+      cls: 'setting-item-description'
+    });
+
+    this.plugin.settings.quickAddProfiles.forEach((profile, idx) => {
+      this.renderQuickAddProfile(containerEl, profile, idx);
+    });
+
+    new Setting(containerEl)
+      .addButton(btn => {
+        btn.setButtonText('+ Add profile');
+        btn.onClick(async () => {
+          this.plugin.settings.quickAddProfiles.push({
+            id: Date.now().toString(),
+            name: 'New Profile',
+            folder: '',
+            props: [],
+          });
+          await this.plugin.saveSettings();
+          this.display();
+        });
+      });
   }
 
   private renderGroup(container: HTMLElement, group: ColorGroup, idx: number) {
@@ -161,6 +202,87 @@ export class BaseViewsSettingTab extends PluginSettingTab {
           this.display();
         });
       });
+  }
+
+  private renderQuickAddProfile(container: HTMLElement, profile: QuickAddProfile, idx: number) {
+    const profileEl = container.createDiv('bv-qa-profile');
+    const headerRow = profileEl.createDiv('bv-qa-profile-header');
+
+    const nameInput = headerRow.createEl('input', { cls: 'bv-qa-name' });
+    nameInput.type = 'text';
+    nameInput.value = profile.name;
+    nameInput.placeholder = 'Profile name';
+    nameInput.addEventListener('change', async () => {
+      profile.name = nameInput.value;
+      await this.plugin.saveSettings();
+    });
+
+    const folderInput = headerRow.createEl('input', { cls: 'bv-qa-folder' });
+    folderInput.type = 'text';
+    folderInput.value = profile.folder;
+    folderInput.placeholder = 'Folder path (empty = vault root)';
+    folderInput.addEventListener('change', async () => {
+      profile.folder = folderInput.value.trim();
+      await this.plugin.saveSettings();
+    });
+
+    const removeProfileBtn = headerRow.createEl('button', { cls: 'bv-qa-remove', text: 'Remove profile' });
+    removeProfileBtn.addEventListener('click', async () => {
+      this.plugin.settings.quickAddProfiles.splice(idx, 1);
+      await this.plugin.saveSettings();
+      this.display();
+    });
+
+    const propsEl = profileEl.createDiv('bv-qa-props');
+    profile.props.forEach((prop, propIdx) => {
+      this.renderPropRow(propsEl, profile, prop, propIdx);
+    });
+
+    new Setting(profileEl)
+      .addButton(btn => {
+        btn.setButtonText('+ Add property');
+        btn.onClick(async () => {
+          profile.props.push({ name: '', value: '' });
+          await this.plugin.saveSettings();
+          this.display();
+        });
+      });
+  }
+
+  private renderPropRow(container: HTMLElement, profile: QuickAddProfile, prop: QuickAddProp, propIdx: number) {
+    const row = container.createDiv('bv-qa-prop-row');
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.value = prop.name;
+    nameInput.className = 'bv-qa-prop-name';
+    nameInput.placeholder = 'Property name';
+    nameInput.addEventListener('change', async () => {
+      prop.name = nameInput.value.trim();
+      await this.plugin.saveSettings();
+    });
+    row.appendChild(nameInput);
+
+    const valueInput = document.createElement('input');
+    valueInput.type = 'text';
+    valueInput.value = prop.value;
+    valueInput.className = 'bv-qa-prop-value';
+    valueInput.placeholder = '"today", literal value, or empty to prompt';
+    valueInput.addEventListener('change', async () => {
+      prop.value = valueInput.value;
+      await this.plugin.saveSettings();
+    });
+    row.appendChild(valueInput);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.textContent = 'Remove';
+    removeBtn.className = 'bv-qa-prop-remove';
+    removeBtn.addEventListener('click', async () => {
+      profile.props.splice(propIdx, 1);
+      await this.plugin.saveSettings();
+      this.display();
+    });
+    row.appendChild(removeBtn);
   }
 
   private renderColorRow(container: HTMLElement, group: ColorGroup, value: string, color: string) {
