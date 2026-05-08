@@ -402,6 +402,21 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 			titleEl.createSpan({ cls: 'bk-col-count', text: ` ${cards.length}` });
 		}
 
+		// ── Add card button ──
+		if (!collapsed) {
+			const addBtn = hdr.createEl('button', { cls: 'bk-add', title: 'Add card', text: '+' });
+			addBtn.addEventListener('click', async (e) => {
+				e.stopPropagation();
+				const groupPid = this.getGroupByPropId();
+				await this.createFileForView('Note', (fm: Record<string, unknown>) => {
+					if (groupPid) {
+						const { name } = parsePropertyId(groupPid);
+						fm[name] = colKey === NULL_KEY ? '' : colKey;
+					}
+				});
+			});
+		}
+
 		// ── Kebab ──
 		const kebab = hdr.createEl('button', { cls: 'bk-kebab', title: 'Options' });
 		kebab.textContent = '⋮';
