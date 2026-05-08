@@ -5,6 +5,7 @@ import {
 } from 'obsidian';
 import { BaseCalendarView, VIEW_TYPE_BASE_CALENDAR } from './calendar-view';
 import { BaseKanbanView, VIEW_TYPE_BASE_KANBAN } from './kanban-view';
+import { BaseTimelineView, VIEW_TYPE_BASE_TIMELINE } from './timeline-view';
 import { BaseViewsSettings, DEFAULT_SETTINGS, BaseViewsSettingTab, migrateSettings } from './settings';
 
 class DisabledView extends BasesView {
@@ -233,6 +234,92 @@ export default class BaseViewsPlugin extends Plugin {
               default: 'header',
               options: { header: 'Header accent', column: 'Whole column', both: 'Header + card border' },
             } as BasesDropdownOption,
+          ],
+        },
+        {
+          type: 'group',
+          displayName: 'Background image',
+          items: [
+            {
+              type: 'text',
+              displayName: 'Image URL or vault path',
+              key: 'bgImage',
+              placeholder: 'https://... or path/to/image.png',
+            } as BasesTextOption,
+            {
+              type: 'dropdown',
+              displayName: 'Fit',
+              key: 'bgFit',
+              default: 'cover',
+              options: { cover: 'Cover', contain: 'Contain', stretch: 'Stretch' },
+            } as BasesDropdownOption,
+            {
+              type: 'slider',
+              displayName: 'Blur',
+              key: 'bgBlur',
+              default: 0,
+              min: 0,
+              max: 20,
+              step: 1,
+            } as BasesSliderOption,
+            {
+              type: 'slider',
+              displayName: 'Opacity',
+              key: 'bgOpacity',
+              default: 0.3,
+              min: 0,
+              max: 1,
+              step: 0.05,
+            } as BasesSliderOption,
+          ],
+        },
+      ] as BasesAllOptions[]),
+    });
+
+    this.registerBasesView(VIEW_TYPE_BASE_TIMELINE, {
+      name: 'Timeline',
+      icon: 'gantt-chart',
+      factory: (controller, containerEl) => {
+        if (!this.settings.enableTimeline) {
+          return new DisabledView(controller, containerEl, VIEW_TYPE_BASE_TIMELINE, 'Timeline');
+        }
+        return new BaseTimelineView(controller, containerEl, this);
+      },
+      options: () => ([
+        {
+          type: 'group',
+          displayName: 'Properties',
+          items: [
+            { type: 'property', displayName: 'Start date', key: 'dateProperty' },
+            { type: 'property', displayName: 'End date', key: 'endDateProperty' },
+            { type: 'property', displayName: 'Done', key: 'doneProperty' },
+            { type: 'property', displayName: 'Subtitle', key: 'subtitleProperty' },
+          ],
+        },
+        {
+          type: 'group',
+          displayName: 'Display',
+          items: [
+            {
+              type: 'dropdown',
+              displayName: 'Zoom level',
+              key: 'zoomLevel',
+              default: 'week',
+              options: { day: 'Day', week: 'Week', month: 'Month' },
+            } as BasesDropdownOption,
+          ],
+        },
+        {
+          type: 'group',
+          displayName: 'Color',
+          items: [
+            { type: 'property', displayName: 'Color by property', key: 'colorProperty' },
+            {
+              type: 'multitext',
+              displayName: 'Value colors (value:color)',
+              key: 'colorValues',
+              default: [],
+            } as BasesMultitextOption,
           ],
         },
         {
