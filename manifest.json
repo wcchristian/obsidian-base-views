@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-base-views",
+  "name": "Base Views",
+  "version": "1.0.0",
+  "minAppVersion": "1.10.0",
+  "description": "Adds Calendar and Kanban views to Obsidian Bases",
+  "author": "Christian Andersen",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}
