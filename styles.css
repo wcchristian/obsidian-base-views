@@ -825,7 +825,8 @@
   flex-direction: column;
   gap: 24px;
   padding: 16px;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   height: 100%;
   box-sizing: border-box;
   position: relative;
@@ -842,6 +843,7 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
 }
 
 .bk-section-hdr {
@@ -949,7 +951,7 @@
 .bk-col-count {
   font-size: var(--font-ui-smaller);
   color: var(--text-muted);
-  font-weight: 400;
+  font-weight: 500;
 }
 
 /* ── Column body ─────────────────────────────────────────────── */
@@ -968,17 +970,23 @@
   padding: 8px 10px;
   cursor: pointer;
   border: 1px solid var(--background-modifier-border);
-  transition: box-shadow 0.1s, border-color 0.1s;
+  transition: box-shadow 0.1s, border-color 0.1s, background 0.1s;
+  min-width: 0;
 }
 
 .bk-card:hover {
   border-color: var(--interactive-accent);
   box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+  background: color-mix(in srgb, var(--interactive-accent) 4%, var(--background-primary));
 }
 
 .bk-card.bk-dragging {
   opacity: 0.4;
   cursor: grabbing;
+}
+
+.bk-card-done {
+  opacity: 0.7;
 }
 
 .bk-card-done .bk-card-link {
@@ -1024,13 +1032,14 @@
   display: flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
 }
 
 .bk-card-link {
   font-size: var(--font-ui-small);
   color: var(--text-normal);
   text-decoration: none;
-  font-weight: 500;
+  font-weight: 600;
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1065,6 +1074,9 @@
 .bk-prop-val {
   color: var(--text-normal);
   cursor: text;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bk-prop-val:hover {
@@ -1132,6 +1144,27 @@
   background: var(--background-modifier-hover);
 }
 
+/* ── Add-card button ─────────────────────────────────────────── */
+.bk-add {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 4px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bk-add:hover {
+  color: var(--interactive-accent);
+  background: var(--background-modifier-hover);
+}
+
 /* ── Drop indicators ─────────────────────────────────────────── */
 .bk-drop-line {
   height: 2px;
@@ -1165,4 +1198,13 @@
 .bk-board {
   position: relative;
   z-index: 1;
+}
+
+/* ── Mobile ──────────────────────────────────────────────────── */
+@media (max-width: 500px) {
+  .bk-wrap { padding: 8px; gap: 12px; }
+  .bk-col-hdr { padding: 6px 8px 6px 10px; }
+  .bk-card { padding: 6px 8px; }
+  .bk-col { min-width: 200px; }
+  .bk-col-body { padding: 6px; gap: 4px; }
 }
