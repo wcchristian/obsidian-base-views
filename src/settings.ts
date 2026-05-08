@@ -10,6 +10,7 @@ export interface ColorGroup {
 export interface BaseViewsSettings {
   enableCalendar: boolean;
   enableKanban: boolean;
+  enableTimeline: boolean;
   colorGroups: ColorGroup[];
   localOrder: Record<string, string[]>;
 }
@@ -17,6 +18,7 @@ export interface BaseViewsSettings {
 export const DEFAULT_SETTINGS: BaseViewsSettings = {
   enableCalendar: true,
   enableKanban: true,
+  enableTimeline: true,
   colorGroups: [
     { name: 'Project', propertyName: 'project', colors: {} }
   ],
@@ -27,6 +29,7 @@ export function migrateSettings(raw: any): BaseViewsSettings {
   const out: BaseViewsSettings = {
     enableCalendar: raw?.enableCalendar !== false,
     enableKanban: raw?.enableKanban !== false,
+    enableTimeline: raw?.enableTimeline !== false,
     colorGroups: raw?.colorGroups,
     localOrder: raw?.localOrder ?? {}
   } as BaseViewsSettings;
@@ -78,6 +81,17 @@ export class BaseViewsSettingTab extends PluginSettingTab {
         toggle.setValue(this.plugin.settings.enableKanban);
         toggle.onChange(async (value) => {
           this.plugin.settings.enableKanban = value;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName('Timeline view')
+      .setDesc('Show notes as bars on a scrollable Gantt-chart timeline.')
+      .addToggle(toggle => {
+        toggle.setValue(this.plugin.settings.enableTimeline);
+        toggle.onChange(async (value) => {
+          this.plugin.settings.enableTimeline = value;
           await this.plugin.saveSettings();
         });
       });
