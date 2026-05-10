@@ -1,5 +1,7 @@
 import { BasesView, TFile, Notice, QueryController, HoverParent, HoverPopover, Keymap, BasesEntry, BasesPropertyId, parsePropertyId, Value, BooleanValue, StringValue, NumberValue, DateValue, TagValue, NullValue, Menu, App, Modal, Platform } from 'obsidian';
 import BaseViewsPlugin from './main';
+import { QuickAddModal } from './quick-add-modal';
+import { AUTO_PALETTE } from './util';
 
 export const VIEW_TYPE_BASE_CALENDAR = 'base-calendar-view';
 
@@ -102,8 +104,11 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 	private maxPerDay = 3;
 	private monthExpand = false;
 	private agendaDays = 30;
-	private sortMode: 'manual' | 'titleAsc' | 'titleDesc' | 'startAsc' | 'startDesc' = 'manual';
+	private weekDays = 7;
+	private weekRolling = false;
+	private sortOrderProp: string | null = null;
 	private grouped = false;
+	private autoColorMap: Record<string, string> = {};
 
 	private dragOrderId: string | null = null;
 	private dragSourceDateKey: string | null = null;
@@ -141,10 +146,13 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 		this.monthExpand = !!this.config.get('monthExpand');
 		const ad = this.config.get('agendaDays');
 		if (typeof ad === 'number' && ad >= 1) this.agendaDays = Math.min(30, Math.floor(ad));
-		const sm = this.config.get('sortMode');
-		if (sm === 'manual' || sm === 'titleAsc' || sm === 'titleDesc' || sm === 'startAsc' || sm === 'startDesc') {
-			this.sortMode = sm;
-		}
+
+		const wd = this.config.get('weekDays');
+		if (typeof wd === 'number' && wd >= 1) this.weekDays = Math.min(10, Math.floor(wd));
+		this.weekRolling = !!this.config.get('weekRolling');
+
+		const sop = this.config.getAsPropertyId('sortOrderProperty');
+		this.sortOrderProp = sop ? parsePropertyId(sop).name : null;
 
 		this.buildUI(this.wrap);
 		await this.loadData();
@@ -189,13 +197,13 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 
 		prev.onclick = () => {
 			if (this.viewMode === 'month') this.curDate = new Date(this.curDate.getFullYear(), this.curDate.getMonth() - 1, 1);
-			else if (this.viewMode === 'week') this.curDate = new Date(this.curDate.getTime() - 7 * MS_PER_DAY);
+			else if (this.viewMode === 'week') this.curDate = new Date(this.curDate.getTime() - this.weekDays * MS_PER_DAY);
 			else this.curDate = new Date(this.curDate.getTime() - this.agendaDays * MS_PER_DAY);
 			this.render();
 		};
 		next.onclick = () => {
 			if (this.viewMode === 'month') this.curDate = new Date(this.curDate.getFullYear(), this.curDate.getMonth() + 1, 1);
-			else if (this.viewMode === 'week') this.curDate = new Date(this.curDate.getTime() + 7 * MS_PER_DAY);
+			else if (this.viewMode === 'week') this.curDate = new Date(this.curDate.getTime() + this.weekDays * MS_PER_DAY);
 			else this.curDate = new Date(this.curDate.getTime() + this.agendaDays * MS_PER_DAY);
 			this.render();
 		};
@@ -309,6 +317,9 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 		if (!this.titleEl || !this.bodyEl || !this.hrowEl) return;
 		this.titleEl.textContent = this.curDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 
+		// Always 7 columns for month view
+		this.bodyEl.style.setProperty('--bc-cols', '7');
+		this.hrowEl.style.setProperty('--bc-cols', '7');
 		['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].forEach(d => this.hrowEl!.createEl('div', { text: d, cls: 'bc-dname' }));
 
 		const yr = this.curDate.getFullYear();
@@ -344,18 +355,37 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 		if (!this.titleEl || !this.bodyEl || !this.hrowEl) return;
 
 		const today = new Date(); today.setHours(0,0,0,0);
-		const cur = new Date(this.curDate); cur.setHours(0,0,0,0);
-		const weekStart = new Date(cur.getTime() - cur.getDay() * MS_PER_DAY);
-		const weekEnd = new Date(weekStart.getTime() + 6 * MS_PER_DAY);
+		let weekStart: Date;
+
+		if (this.weekRolling) {
+			// Rolling: start from today (or curDate)
+			const cur = new Date(this.curDate); cur.setHours(0,0,0,0);
+			weekStart = cur;
+		} else {
+			// Fixed: start from Sunday of current week
+			const cur = new Date(this.curDate); cur.setHours(0,0,0,0);
+			weekStart = new Date(cur.getTime() - cur.getDay() * MS_PER_DAY);
+		}
+
+		const weekEnd = new Date(weekStart.getTime() + (this.weekDays - 1) * MS_PER_DAY);
 
 		const fmt = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 		this.titleEl.textContent = `${fmt(weekStart)} — ${fmt(weekEnd)}, ${weekEnd.getFullYear()}`;
 
-		['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].forEach(d => this.hrowEl!.createEl('div', { text: d, cls: 'bc-dname' }));
+		// Set CSS variable for column count
+		this.bodyEl.style.setProperty('--bc-cols', String(this.weekDays));
+		this.hrowEl.style.setProperty('--bc-cols', String(this.weekDays));
+
+		// Generate day headers from actual dates
+		for (let c = 0; c < this.weekDays; c++) {
+			const dt = new Date(weekStart.getTime() + c * MS_PER_DAY);
+			const dayName = dt.toLocaleDateString('en-US', { weekday: 'short' });
+			this.hrowEl.createEl('div', { text: dayName, cls: 'bc-dname' });
+		}
 
 		const weekRow = this.bodyEl.createDiv('bc-week');
 		const weekDays: DayInfo[] = [];
-		for (let c = 0; c < 7; c++) {
+		for (let c = 0; c < this.weekDays; c++) {
 			const dt = new Date(weekStart.getTime() + c * MS_PER_DAY);
 			dt.setHours(0,0,0,0);
 			const info = this.makeCell(weekRow, dt, 0, c, today, true);
@@ -491,7 +521,7 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 			const evEndT = (ev.end as Date).getTime();
 			this.weeks.forEach((wk, wIdx) => {
 				const weekStartT = wk.days[0].date.getTime();
-				const weekEndT = wk.days[6].date.getTime();
+				const weekEndT = wk.days[wk.days.length - 1].date.getTime();
 				if (evEndT < weekStartT || evStartT > weekEndT) return;
 
 				const segStartT = Math.max(evStartT, weekStartT);
@@ -511,20 +541,26 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 			d.evList.empty();
 			let evs = singleDayByDate.get(d.dateKey) ?? [];
 
-			if (this.sortMode === 'manual') {
-				const order = this.plugin.settings.localOrder[d.dateKey];
-				if (order && order.length > 0) {
-					const out: CalEvent[] = [];
-					const remaining = [...evs];
-					for (const id of order) {
-						const idx = remaining.findIndex(e => e.id === id);
-						if (idx !== -1) out.push(remaining.splice(idx, 1)[0]);
-					}
-					evs = [...out, ...remaining];
+			// Sort: localOrder first, then sortOrderProperty if configured, else Bases-supplied order
+			const order = this.plugin.settings.localOrder[d.dateKey];
+			if (order && order.length > 0) {
+				const out: CalEvent[] = [];
+				const remaining = [...evs];
+				for (const id of order) {
+					const idx = remaining.findIndex(e => e.id === id);
+					if (idx !== -1) out.push(remaining.splice(idx, 1)[0]);
 				}
-			} else {
-				evs = this.sortEvents(evs);
+				evs = [...out, ...remaining];
+			} else if (this.sortOrderProp) {
+				evs = [...evs].sort((a, b) => {
+					const va = a.entry.getValue(`note.${this.sortOrderProp}` as BasesPropertyId);
+					const vb = b.entry.getValue(`note.${this.sortOrderProp}` as BasesPropertyId);
+					const na = va && !(va instanceof NullValue) ? parseFloat(va.toString()) : Infinity;
+					const nb = vb && !(vb instanceof NullValue) ? parseFloat(vb.toString()) : Infinity;
+					return na - nb;
+				});
 			}
+			// else: use Bases-supplied order (no modification)
 
 			d.events = evs;
 
@@ -536,16 +572,58 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 				more.textContent = `+${hidden} more`;
 				more.onclick = (e) => {
 					e.stopPropagation();
-					this.openMorePopover(d, more);
+					this.openMorePopover(d, more, false);
 				};
+
+				// Hover popover support
+				let hoverTimer: number | null = null;
+				d.cell!.addEventListener('mouseenter', () => {
+					if (this.morePopover) return; // already open (click-pinned)
+					hoverTimer = window.setTimeout(() => this.openMorePopover(d, more, true), 200);
+				});
+				d.cell!.addEventListener('mouseleave', () => {
+					if (hoverTimer !== null) { clearTimeout(hoverTimer); hoverTimer = null; }
+				});
 			} else {
 				this.renderDayChips(d.evList, evs);
 			}
 		});
 
 		this.weeks.forEach((wk, wIdx) => {
-			if (!wk.overlay) return;
 			const segs = multiByWeek[wIdx];
+
+			if (this.monthExpand && this.viewMode === 'month') {
+				// Inline mode: render a bar in each day's evList instead of the overlay
+				if (segs.length === 0) return;
+				segs.sort((a, b) => a.startCol - b.startCol || (b.endCol - b.startCol) - (a.endCol - a.startCol));
+				for (const seg of segs) {
+					for (let col = seg.startCol; col <= seg.endCol; col++) {
+						const day = wk.days[col];
+						if (!day?.evList) continue;
+						const bar = day.evList.createDiv('bc-md-inline');
+						const color = this.getEventColor(seg.ev);
+						if (color) {
+							bar.style.background = `color-mix(in srgb, ${color} 60%, var(--background-primary))`;
+						} else {
+							bar.style.background = `color-mix(in srgb, var(--interactive-accent) 35%, var(--background-primary))`;
+						}
+						if (col === seg.startCol) {
+							bar.textContent = seg.ev.title;
+							bar.title = seg.ev.title;
+						} else {
+							bar.style.opacity = '0.6';
+						}
+						bar.onclick = (e) => {
+							e.stopPropagation();
+							const leaf = this.app.workspace.getLeaf(Keymap.isModEvent(e as MouseEvent));
+							leaf?.openFile(seg.ev.file);
+						};
+					}
+				}
+				return;
+			}
+
+			if (!wk.overlay) return;
 			if (segs.length === 0) {
 				wk.overlay.style.height = '0px';
 				wk.days.forEach(d => { if (d.evList) d.evList.style.paddingTop = '0px'; });
@@ -578,25 +656,6 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 		});
 	}
 
-	private sortEvents(evs: CalEvent[]): CalEvent[] {
-		const out = [...evs];
-		switch (this.sortMode) {
-			case 'titleAsc':
-				out.sort((a, b) => a.title.localeCompare(b.title));
-				break;
-			case 'titleDesc':
-				out.sort((a, b) => b.title.localeCompare(a.title));
-				break;
-			case 'startAsc':
-				out.sort((a, b) => a.start.getTime() - b.start.getTime() || a.title.localeCompare(b.title));
-				break;
-			case 'startDesc':
-				out.sort((a, b) => b.start.getTime() - a.start.getTime() || a.title.localeCompare(b.title));
-				break;
-		}
-		return out;
-	}
-
 	private renderDayChips(parent: HTMLElement, evs: CalEvent[]) {
 		if (!this.grouped) {
 			evs.forEach(ev => this.makeChip(parent, ev));
@@ -613,6 +672,7 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 			const section = parent.createDiv('bc-group');
 			const label = section.createDiv('bc-group-label');
 			label.textContent = k || '—';
+			label.title = k || '—';
 			const items = section.createDiv('bc-group-items');
 			for (const ev of byKey.get(k)!) {
 				this.makeChip(items, ev);
@@ -632,30 +692,14 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 
 	private getEventColor(ev: CalEvent): string | null {
 		const viewProp = this.getColorPropName();
+		if (!viewProp) return null;
 
-		if (viewProp) {
-			const pid = `note.${viewProp}` as BasesPropertyId;
-			const val = ev.entry.getValue(pid);
-			if (val && !(val instanceof NullValue)) {
-				const viewMap = this.getViewColorMap();
-				const c = viewMap[val.toString().trim()];
-				if (c) return c;
-				for (const group of this.plugin.settings.colorGroups) {
-					if (group.propertyName !== viewProp) continue;
-					const gc = group.colors[val.toString().trim()];
-					if (gc) return gc;
-				}
-			}
-			return null;
-		}
-
-		for (const group of this.plugin.settings.colorGroups) {
-			if (!group.propertyName) continue;
-			const pid = `note.${group.propertyName}` as BasesPropertyId;
-			const val = ev.entry.getValue(pid);
-			if (!val || val instanceof NullValue) continue;
-			const c = group.colors[val.toString().trim()];
-			if (c) return c;
+		const pid = `note.${viewProp}` as BasesPropertyId;
+		const val = ev.entry.getValue(pid);
+		if (val && !(val instanceof NullValue)) {
+			const valStr = val.toString().trim();
+			const viewMap = this.getViewColorMap();
+			return viewMap[valStr] ?? this.autoColorMap[valStr] ?? null;
 		}
 		return null;
 	}
@@ -692,6 +736,7 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 		}
 
 		const label = bar.createSpan({ cls: 'bc-md-label', text: seg.ev.title });
+		label.title = seg.ev.title;
 		label.onclick = (e) => {
 			e.preventDefault();
 			e.stopPropagation();
@@ -746,6 +791,7 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 		}
 
 		const link = titleRow.createEl('a', { text: ev.title, cls: 'bc-chip-link', href: '#' });
+		link.title = ev.title;
 		link.onclick = e => {
 			e.preventDefault();
 			e.stopPropagation();
@@ -852,7 +898,7 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 		}
 	}
 
-	private openMorePopover(day: DayInfo, anchor: HTMLElement) {
+	private openMorePopover(day: DayInfo, anchor: HTMLElement, isHover: boolean) {
 		this.closeMorePopover();
 		const pop = document.body.createDiv('bc-more-popover');
 		this.morePopover = pop;
@@ -878,13 +924,32 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 			}
 		});
 
-		const handler = (e: MouseEvent) => {
-			if (!this.morePopover) return;
-			if (this.morePopover.contains(e.target as Node)) return;
-			this.closeMorePopover();
-		};
-		this.moreOutsideHandler = handler;
-		setTimeout(() => document.addEventListener('mousedown', handler), 0);
+		if (isHover) {
+			// For hover: close when leaving both the cell and the popover
+			const cellEl = day.cell;
+			let insideCell = false;
+			let insidePop = false;
+
+			const checkClose = () => {
+				if (!insideCell && !insidePop) this.closeMorePopover();
+			};
+
+			if (cellEl) {
+				cellEl.addEventListener('mouseleave', () => { insideCell = false; setTimeout(checkClose, 50); });
+				cellEl.addEventListener('mouseenter', () => { insideCell = true; });
+				insideCell = true;
+			}
+			pop.addEventListener('mouseenter', () => { insidePop = true; });
+			pop.addEventListener('mouseleave', () => { insidePop = false; setTimeout(checkClose, 50); });
+		} else {
+			const handler = (e: MouseEvent) => {
+				if (!this.morePopover) return;
+				if (this.morePopover.contains(e.target as Node)) return;
+				this.closeMorePopover();
+			};
+			this.moreOutsideHandler = handler;
+			setTimeout(() => document.addEventListener('mousedown', handler), 0);
+		}
 	}
 
 	private closeMorePopover() {
@@ -994,11 +1059,7 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 			const id = e.dataTransfer?.getData('text/plain');
 			if (!id) return;
 			if (this.dragSourceDateKey === info.dateKey) {
-				if (this.sortMode === 'manual') {
-					await this.reorderEvent(id, listEl);
-				} else {
-					this.removeDropIndicator();
-				}
+				await this.reorderEvent(id, listEl);
 			} else {
 				this.removeDropIndicator();
 				await this.moveEvent(id, info.date);
@@ -1029,6 +1090,22 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 		ids.splice(toIdx, 0, dragId);
 		this.plugin.settings.localOrder[day.dateKey] = ids;
 		await this.plugin.saveSettings();
+
+		// Write sortOrderProperty to frontmatter if configured
+		if (this.sortOrderProp && this.dateProp) {
+			for (let i = 0; i < ids.length; i++) {
+				const ev = this.events.find(e => e.id === ids[i]);
+				if (ev) {
+					try {
+						const sortPropId = `note.${this.sortOrderProp}` as BasesPropertyId;
+						await this.writeProp(ev.file, sortPropId, String(i * 10));
+					} catch (err) {
+						console.error('Failed to write sort order prop:', err);
+					}
+				}
+			}
+		}
+
 		this.placeEvents();
 	}
 
@@ -1054,15 +1131,8 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 		}
 	}
 
-	private async createNote(startDate: Date, endDate: Date | null) {
-		const ds = DK(startDate);
-		const dateName = this.dateProp ? parsePropertyId(this.dateProp).name : 'date';
-		const endName = this.endProp ? parsePropertyId(this.endProp).name : 'endDate';
-
-		await this.createFileForView(`Note ${ds}`, (fm: any) => {
-			fm[dateName] = ds;
-			if (endDate && this.endProp) fm[endName] = DK(endDate);
-		});
+	private createNote(startDate: Date, _endDate: Date | null) {
+		new QuickAddModal(this.app, this.plugin.settings, this.plugin, `Note ${DK(startDate)}`).open();
 	}
 
 	private async loadData() {
@@ -1113,6 +1183,21 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 					groupKey: gKey
 				});
 			}
+		}
+
+		// Build auto-color map when colorProperty set but no colorValues configured
+		this.autoColorMap = {};
+		const colorPropName = this.getColorPropName();
+		if (colorPropName && Object.keys(this.getViewColorMap()).length === 0) {
+			const pid = `note.${colorPropName}` as BasesPropertyId;
+			const unique = [...new Set(
+				this.events
+					.map(ev => ev.entry.getValue(pid))
+					.filter((v): v is NonNullable<typeof v> => !!v && !(v instanceof NullValue))
+					.map(v => v.toString().trim())
+					.filter(Boolean),
+			)].sort();
+			unique.forEach((v, i) => { this.autoColorMap[v] = AUTO_PALETTE[i % AUTO_PALETTE.length]; });
 		}
 
 		this.placeEvents();

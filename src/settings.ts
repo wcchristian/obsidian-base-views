@@ -1,15 +1,11 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import BaseViewsPlugin from './main';
-
-export interface ColorGroup {
-  name: string;
-  propertyName: string;
-  colors: Record<string, string>;
-}
+import { FolderSuggest, FileSuggest } from './util';
 
 export interface QuickAddProp {
   name: string;   // frontmatter key, e.g. "date", "project"
   value: string;  // "today" → YYYY-MM-DD, "" → user prompted, anything else → literal
+  type?: 'text' | 'number' | 'checkbox' | 'date' | 'datetime' | 'list';
 }
 
 export interface QuickAddProfile {
@@ -17,13 +13,14 @@ export interface QuickAddProfile {
   name: string;           // display name, e.g. "Work Notes"
   folder: string;         // vault-relative folder path, "" = vault root
   props: QuickAddProp[];
+  templateFile?: string;  // optional path to a template file
 }
 
 export interface BaseViewsSettings {
   enableCalendar: boolean;
   enableKanban: boolean;
   enableTimeline: boolean;
-  colorGroups: ColorGroup[];
+  enableList: boolean;
   localOrder: Record<string, string[]>;
   quickAddProfiles: QuickAddProfile[];
 }
@@ -32,9 +29,7 @@ export const DEFAULT_SETTINGS: BaseViewsSettings = {
   enableCalendar: true,
   enableKanban: true,
   enableTimeline: true,
-  colorGroups: [
-    { name: 'Project', propertyName: 'project', colors: {} }
-  ],
+  enableList: true,
   localOrder: {},
   quickAddProfiles: [],
 };
@@ -44,17 +39,16 @@ export function migrateSettings(raw: any): BaseViewsSettings {
     enableCalendar: raw?.enableCalendar !== false,
     enableKanban: raw?.enableKanban !== false,
     enableTimeline: raw?.enableTimeline !== false,
-    colorGroups: raw?.colorGroups,
+    enableList: raw?.enableList !== false,
     localOrder: raw?.localOrder ?? {},
     quickAddProfiles: Array.isArray(raw?.quickAddProfiles) ? raw.quickAddProfiles : [],
-  } as BaseViewsSettings;
+  };
 
-  if (!Array.isArray(out.colorGroups) || out.colorGroups.length === 0) {
-    out.colorGroups = [{
-      name: 'Project',
-      propertyName: typeof raw?.projectPropertyName === 'string' && raw.projectPropertyName ? raw.projectPropertyName : 'project',
-      colors: (raw?.projectColors && typeof raw.projectColors === 'object') ? raw.projectColors : {}
-    }];
+  // Migrate existing props without type: default to 'text'
+  for (const profile of out.quickAddProfiles) {
+    for (const prop of profile.props) {
+      if (!prop.type) prop.type = 'text';
+    }
   }
 
   return out;
@@ -111,24 +105,14 @@ export class BaseViewsSettingTab extends PluginSettingTab {
         });
       });
 
-    // ── Calendar color groups ──────────────────────────────────
-    containerEl.createEl('h3', { text: 'Calendar color groups' });
-    containerEl.createEl('p', {
-      text: 'Define color groups keyed by a frontmatter property. Each calendar view can pick which group drives the primary (left border) and secondary (right border) colors of an event.',
-      cls: 'setting-item-description'
-    });
-
-    this.plugin.settings.colorGroups.forEach((group, idx) => {
-      this.renderGroup(containerEl, group, idx);
-    });
-
     new Setting(containerEl)
-      .addButton(btn => {
-        btn.setButtonText('+ Add color group');
-        btn.onClick(async () => {
-          this.plugin.settings.colorGroups.push({ name: 'Group', propertyName: '', colors: {} });
+      .setName('List view')
+      .setDesc('Show notes as a flat or grouped list with color, properties, and sorting.')
+      .addToggle(toggle => {
+        toggle.setValue(this.plugin.settings.enableList);
+        toggle.onChange(async (value) => {
+          this.plugin.settings.enableList = value;
           await this.plugin.saveSettings();
-          this.display();
         });
       });
 
@@ -151,53 +135,8 @@ export class BaseViewsSettingTab extends PluginSettingTab {
             id: Date.now().toString(),
             name: 'New Profile',
             folder: '',
-            props: [],
+            props: [{ name: '', value: '', type: 'text' }],
           });
-          await this.plugin.saveSettings();
-          this.display();
-        });
-      });
-  }
-
-  private renderGroup(container: HTMLElement, group: ColorGroup, idx: number) {
-    const groupEl = container.createDiv('bc-color-group');
-    const headerRow = groupEl.createDiv('bc-color-group-header');
-
-    const nameInput = headerRow.createEl('input', { cls: 'bc-cg-name' });
-    nameInput.type = 'text';
-    nameInput.value = group.name;
-    nameInput.placeholder = 'Group name';
-    nameInput.addEventListener('change', async () => {
-      group.name = nameInput.value;
-      await this.plugin.saveSettings();
-    });
-
-    const propInput = headerRow.createEl('input', { cls: 'bc-cg-prop' });
-    propInput.type = 'text';
-    propInput.value = group.propertyName;
-    propInput.placeholder = 'Property name (e.g. project)';
-    propInput.addEventListener('change', async () => {
-      group.propertyName = nameInput.value.trim() ? propInput.value.trim() : '';
-      await this.plugin.saveSettings();
-    });
-
-    const removeGroupBtn = headerRow.createEl('button', { cls: 'bc-cg-remove', text: 'Remove group' });
-    removeGroupBtn.addEventListener('click', async () => {
-      this.plugin.settings.colorGroups.splice(idx, 1);
-      await this.plugin.saveSettings();
-      this.display();
-    });
-
-    const rowsEl = groupEl.createDiv('bc-color-group-rows');
-    Object.entries(group.colors).forEach(([value, color]) => {
-      this.renderColorRow(rowsEl, group, value, color);
-    });
-
-    new Setting(groupEl)
-      .addButton(btn => {
-        btn.setButtonText('+ Add value');
-        btn.onClick(async () => {
-          group.colors[`value_${Object.keys(group.colors).length + 1}`] = '#808080';
           await this.plugin.saveSettings();
           this.display();
         });
@@ -206,7 +145,12 @@ export class BaseViewsSettingTab extends PluginSettingTab {
 
   private renderQuickAddProfile(container: HTMLElement, profile: QuickAddProfile, idx: number) {
     const profileEl = container.createDiv('bv-qa-profile');
-    const headerRow = profileEl.createDiv('bv-qa-profile-header');
+
+    // ── Destination section ─────────────────────────────────────
+    const destSection = profileEl.createDiv('bv-qa-section');
+    destSection.createDiv({ cls: 'qa-section-title', text: 'Destination' });
+
+    const headerRow = destSection.createDiv('bv-qa-profile-header');
 
     const nameInput = headerRow.createEl('input', { cls: 'bv-qa-name' });
     nameInput.type = 'text';
@@ -217,7 +161,8 @@ export class BaseViewsSettingTab extends PluginSettingTab {
       await this.plugin.saveSettings();
     });
 
-    const folderInput = headerRow.createEl('input', { cls: 'bv-qa-folder' });
+    const folderWrapper = headerRow.createDiv({ cls: 'bv-qa-folder-wrap' });
+    const folderInput = folderWrapper.createEl('input', { cls: 'bv-qa-folder' });
     folderInput.type = 'text';
     folderInput.value = profile.folder;
     folderInput.placeholder = 'Folder path (empty = vault root)';
@@ -225,6 +170,7 @@ export class BaseViewsSettingTab extends PluginSettingTab {
       profile.folder = folderInput.value.trim();
       await this.plugin.saveSettings();
     });
+    new FolderSuggest(this.app, folderInput);
 
     const removeProfileBtn = headerRow.createEl('button', { cls: 'bv-qa-remove', text: 'Remove profile' });
     removeProfileBtn.addEventListener('click', async () => {
@@ -233,16 +179,37 @@ export class BaseViewsSettingTab extends PluginSettingTab {
       this.display();
     });
 
-    const propsEl = profileEl.createDiv('bv-qa-props');
+    // Template file row
+    const tplRow = destSection.createDiv('bv-qa-tpl-row');
+    const tplLabel = tplRow.createEl('label', { text: 'Template file:' });
+    tplLabel.style.fontSize = 'var(--font-ui-small)';
+    tplLabel.style.color = 'var(--text-muted)';
+    tplLabel.style.marginRight = '6px';
+    const tplInput = tplRow.createEl('input', { cls: 'bv-qa-folder' });
+    tplInput.type = 'text';
+    tplInput.value = profile.templateFile ?? '';
+    tplInput.placeholder = 'templates/My Template.md';
+    tplInput.style.flex = '1';
+    new FileSuggest(this.app, tplInput);
+    tplInput.addEventListener('change', async () => {
+      profile.templateFile = tplInput.value.trim() || undefined;
+      await this.plugin.saveSettings();
+    });
+
+    // ── Properties section ──────────────────────────────────────
+    const propsSection = profileEl.createDiv('bv-qa-section');
+    propsSection.createDiv({ cls: 'qa-section-title', text: 'Properties' });
+
+    const propsEl = propsSection.createDiv('bv-qa-props');
     profile.props.forEach((prop, propIdx) => {
       this.renderPropRow(propsEl, profile, prop, propIdx);
     });
 
-    new Setting(profileEl)
+    new Setting(propsSection)
       .addButton(btn => {
         btn.setButtonText('+ Add property');
         btn.onClick(async () => {
-          profile.props.push({ name: '', value: '' });
+          profile.props.push({ name: '', value: '', type: 'text' });
           await this.plugin.saveSettings();
           this.display();
         });
@@ -263,11 +230,35 @@ export class BaseViewsSettingTab extends PluginSettingTab {
     });
     row.appendChild(nameInput);
 
+    // Type dropdown
+    const typeSelect = document.createElement('select');
+    typeSelect.className = 'bv-qa-prop-type';
+    const types: Array<{ v: string; label: string }> = [
+      { v: 'text', label: 'Text' },
+      { v: 'number', label: 'Number' },
+      { v: 'checkbox', label: 'Checkbox' },
+      { v: 'date', label: 'Date' },
+      { v: 'datetime', label: 'DateTime' },
+      { v: 'list', label: 'List' },
+    ];
+    types.forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = t.v;
+      opt.textContent = t.label;
+      if ((prop.type ?? 'text') === t.v) opt.selected = true;
+      typeSelect.appendChild(opt);
+    });
+    typeSelect.addEventListener('change', async () => {
+      prop.type = typeSelect.value as QuickAddProp['type'];
+      await this.plugin.saveSettings();
+    });
+    row.appendChild(typeSelect);
+
     const valueInput = document.createElement('input');
-    valueInput.type = 'text';
+    valueInput.type = prop.type === 'date' || prop.type === 'datetime' ? 'text' : 'text';
     valueInput.value = prop.value;
     valueInput.className = 'bv-qa-prop-value';
-    valueInput.placeholder = '"today", literal value, or empty to prompt';
+    valueInput.placeholder = prop.type === 'date' || prop.type === 'datetime' ? '"today" or YYYY-MM-DD' : '"today", literal value, or empty to prompt';
     valueInput.addEventListener('change', async () => {
       prop.value = valueInput.value;
       await this.plugin.saveSettings();
@@ -279,46 +270,6 @@ export class BaseViewsSettingTab extends PluginSettingTab {
     removeBtn.className = 'bv-qa-prop-remove';
     removeBtn.addEventListener('click', async () => {
       profile.props.splice(propIdx, 1);
-      await this.plugin.saveSettings();
-      this.display();
-    });
-    row.appendChild(removeBtn);
-  }
-
-  private renderColorRow(container: HTMLElement, group: ColorGroup, value: string, color: string) {
-    const row = container.createDiv('bc-project-row');
-
-    const valInput = document.createElement('input');
-    valInput.type = 'text';
-    valInput.value = value;
-    valInput.className = 'bc-project-name-input';
-    valInput.placeholder = 'Property value';
-    valInput.addEventListener('change', async () => {
-      const newVal = valInput.value.trim();
-      if (newVal && newVal !== value) {
-        delete group.colors[value];
-        group.colors[newVal] = color;
-        await this.plugin.saveSettings();
-        this.display();
-      }
-    });
-    row.appendChild(valInput);
-
-    const colorInput = document.createElement('input');
-    colorInput.type = 'color';
-    colorInput.value = color;
-    colorInput.className = 'bc-project-color-picker';
-    colorInput.addEventListener('input', async () => {
-      group.colors[value] = colorInput.value;
-      await this.plugin.saveSettings();
-    });
-    row.appendChild(colorInput);
-
-    const removeBtn = document.createElement('button');
-    removeBtn.textContent = 'Remove';
-    removeBtn.className = 'bc-project-remove-btn';
-    removeBtn.addEventListener('click', async () => {
-      delete group.colors[value];
       await this.plugin.saveSettings();
       this.display();
     });

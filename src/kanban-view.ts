@@ -5,6 +5,9 @@ import {
 	Menu, Notice,
 } from 'obsidian';
 import { writeProp } from './frontmatter';
+import { AUTO_PALETTE } from './util';
+import BaseViewsPlugin from './main';
+import { QuickAddModal } from './quick-add-modal';
 
 export const VIEW_TYPE_BASE_KANBAN = 'base-kanban-view';
 
@@ -27,6 +30,7 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 	private wrap: HTMLElement;
 	private bgLayer: HTMLElement | null = null;
 	private colorMap: Map<string, string> = new Map();
+	private autoColorMap: Map<string, string> = new Map();
 
 	// drag state — cards
 	private dragCardId: string | null = null;
@@ -39,7 +43,7 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 	private dragColSubgroup: string | null = null;
 	private colDropIndicator: HTMLElement | null = null;
 
-	constructor(ctrl: QueryController, parent: HTMLElement) {
+	constructor(ctrl: QueryController, parent: HTMLElement, private plugin: BaseViewsPlugin) {
 		super(ctrl);
 		this.wrap = parent.createDiv('bk-wrap');
 	}
@@ -124,7 +128,7 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 	}
 
 	private getColumnColor(key: string): string | null {
-		return this.colorMap.get(key) ?? null;
+		return this.colorMap.get(key) ?? this.autoColorMap.get(key) ?? null;
 	}
 
 	private setColumnColor(key: string, color: string) {
@@ -164,7 +168,21 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 		return result;
 	}
 
+	private getSortOrderProp(): BasesPropertyId | null {
+		return this.config.getAsPropertyId('sortOrderProperty') ?? null;
+	}
+
 	private sortCardsInColumn(cards: KanbanCard[], bucketKey: string): KanbanCard[] {
+		const sortProp = this.getSortOrderProp();
+		if (sortProp) {
+			return [...cards].sort((a, b) => {
+				const av = a.entry.getValue(sortProp);
+				const bv = b.entry.getValue(sortProp);
+				const an = av && !(av instanceof NullValue) ? Number(av.toString()) : Infinity;
+				const bn = bv && !(bv instanceof NullValue) ? Number(bv.toString()) : Infinity;
+				return an - bn;
+			});
+		}
 		const order = this.getManualCardOrder();
 		const ids = order[bucketKey];
 		if (!ids?.length) return cards;
@@ -256,6 +274,15 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 			if (!colKeySet.has(key)) { colKeySet.add(key); allColKeysRaw.push(key); }
 		}
 		const allColKeys = this.orderColumns(allColKeysRaw);
+
+		// Auto-color columns when no colors manually configured
+		this.autoColorMap = new Map();
+		if (this.colorMap.size === 0) {
+			[...allColKeysRaw].sort().forEach((k, i) => {
+				this.autoColorMap.set(k, AUTO_PALETTE[i % AUTO_PALETTE.length]);
+			});
+		}
+
 		const mergedOrder = this.orderColumns(allColKeysRaw);
 		const savedOrder = this.getColumnOrder();
 		if (JSON.stringify(mergedOrder) !== JSON.stringify(savedOrder)) {
@@ -407,13 +434,7 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 			const addBtn = hdr.createEl('button', { cls: 'bk-add', title: 'Add card', text: '+' });
 			addBtn.addEventListener('click', async (e) => {
 				e.stopPropagation();
-				const groupPid = this.getGroupByPropId();
-				await this.createFileForView('Note', (fm: Record<string, unknown>) => {
-					if (groupPid) {
-						const { name } = parsePropertyId(groupPid);
-						fm[name] = colKey === NULL_KEY ? '' : colKey;
-					}
-				});
+				await this.createKanbanCard(colKey);
 			});
 		}
 
@@ -811,6 +832,20 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 		const order = this.getManualCardOrder();
 		order[bucketKey] = ids;
 		await this.setManualCardOrder(order);
+
+		const sortProp = this.getSortOrderProp();
+		if (sortProp) {
+			for (let i = 0; i < ids.length; i++) {
+				const file = this.app.vault.getFileByPath(ids[i]);
+				if (file) {
+					await writeProp(this.app.vault, file, sortProp, String(i * 10));
+				}
+			}
+		}
+	}
+
+	private createKanbanCard(_colKey: string) {
+		new QuickAddModal(this.app, this.plugin.settings, this.plugin).open();
 	}
 
 	private async moveCard(

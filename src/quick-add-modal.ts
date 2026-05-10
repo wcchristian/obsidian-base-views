@@ -3,6 +3,7 @@ import { BaseViewsSettings, QuickAddProfile, QuickAddProp } from './settings';
 import BaseViewsPlugin from './main';
 
 const DK = (d: Date): string => d.toISOString().slice(0, 10);
+const DKT = (d: Date): string => d.toISOString().slice(0, 16);
 
 async function ensureFolder(vault: Vault, folderPath: string): Promise<void> {
 	const parts = folderPath.split('/').filter(Boolean);
@@ -20,6 +21,7 @@ export class QuickAddModal extends Modal {
 		app: App,
 		private settings: BaseViewsSettings,
 		private plugin: BaseViewsPlugin,
+		private initialTitle?: string,
 	) {
 		super(app);
 	}
@@ -75,7 +77,11 @@ export class QuickAddModal extends Modal {
 	}
 
 	private resolveValue(prop: QuickAddProp): string {
-		if (prop.value === 'today') return DK(new Date());
+		const type = prop.type ?? 'text';
+		if (prop.value === 'today') {
+			if (type === 'datetime') return DKT(new Date());
+			return DK(new Date());
+		}
 		return prop.value;
 	}
 
@@ -87,19 +93,45 @@ export class QuickAddModal extends Modal {
 		titleField.createEl('label', { text: 'Note title' });
 		const titleInput = titleField.createEl('input', { cls: 'bv-qa-input' });
 		titleInput.type = 'text';
-		titleInput.value = `Note ${DK(new Date())}`;
+		titleInput.value = this.initialTitle ?? `Note ${DK(new Date())}`;
 		titleInput.style.width = '100%';
 
-		const propInputEls: { prop: QuickAddProp; input: HTMLInputElement }[] = [];
+		const propInputEls: { prop: QuickAddProp; input: HTMLInputElement | HTMLSelectElement }[] = [];
 		profile.props.forEach(prop => {
 			if (!prop.name) return;
+			const type = prop.type ?? 'text';
 			const fieldDiv = contentEl.createDiv({ cls: 'bv-qa-field' });
 			fieldDiv.createEl('label', { text: prop.name });
-			const inp = fieldDiv.createEl('input', { cls: 'bv-qa-input' });
-			inp.type = 'text';
-			inp.value = this.resolveValue(prop);
-			inp.style.width = '100%';
-			propInputEls.push({ prop, input: inp });
+
+			if (type === 'checkbox') {
+				const inp = fieldDiv.createEl('input', { cls: 'bv-qa-input' });
+				inp.type = 'checkbox';
+				const resolved = this.resolveValue(prop);
+				inp.checked = resolved === 'true' || resolved === '1';
+				propInputEls.push({ prop, input: inp });
+			} else if (type === 'date') {
+				const inp = fieldDiv.createEl('input', { cls: 'bv-qa-input' });
+				inp.type = 'date';
+				const resolved = this.resolveValue(prop);
+				inp.value = resolved;
+				inp.style.width = '100%';
+				propInputEls.push({ prop, input: inp });
+			} else if (type === 'datetime') {
+				const inp = fieldDiv.createEl('input', { cls: 'bv-qa-input' });
+				inp.type = 'datetime-local';
+				const resolved = this.resolveValue(prop);
+				inp.value = resolved;
+				inp.style.width = '100%';
+				propInputEls.push({ prop, input: inp });
+			} else {
+				// text, number, list
+				const inp = fieldDiv.createEl('input', { cls: 'bv-qa-input' });
+				inp.type = type === 'number' ? 'number' : 'text';
+				inp.value = this.resolveValue(prop);
+				inp.style.width = '100%';
+				if (type === 'list') inp.placeholder = 'Comma-separated values';
+				propInputEls.push({ prop, input: inp });
+			}
 		});
 
 		const submit = async () => {
@@ -108,9 +140,18 @@ export class QuickAddModal extends Modal {
 				new Notice('Note title cannot be empty.');
 				return;
 			}
-			const resolvedProps = propInputEls
-				.filter(({ input }) => input.value.trim() !== '')
-				.map(({ prop, input }) => ({ name: prop.name, value: input.value.trim() }));
+			const resolvedProps: { name: string; value: string; type: string }[] = [];
+			for (const { prop, input } of propInputEls) {
+				const type = prop.type ?? 'text';
+				let rawVal: string;
+				if (type === 'checkbox') {
+					rawVal = (input as HTMLInputElement).checked ? 'true' : 'false';
+				} else {
+					rawVal = (input as HTMLInputElement).value.trim();
+				}
+				if (type !== 'checkbox' && rawVal === '') continue;
+				resolvedProps.push({ name: prop.name, value: rawVal, type });
+			}
 			await this.submitForm(profile, titleVal, resolvedProps);
 		};
 
@@ -130,10 +171,35 @@ export class QuickAddModal extends Modal {
 		setTimeout(() => { titleInput.focus(); titleInput.select(); }, 0);
 	}
 
+	private formatValue(value: string, type: string): string {
+		switch (type) {
+			case 'number': {
+				const n = parseFloat(value);
+				return isNaN(n) ? value : String(n);
+			}
+			case 'checkbox':
+				return value === 'true' ? 'true' : 'false';
+			case 'date':
+				return value; // already YYYY-MM-DD
+			case 'datetime':
+				return value; // already YYYY-MM-DDTHH:MM
+			case 'list': {
+				const items = value.split(',').map(s => s.trim()).filter(Boolean);
+				if (items.length === 0) return '[]';
+				return `[${items.map(i => `"${i}"`).join(', ')}]`;
+			}
+			default: {
+				// text — quote if it looks like it needs it (contains colon, starts with special yaml chars)
+				const needsQuotes = /[:#\[\]{},|>&*!%@`]/.test(value) || value.startsWith('"') || value === '';
+				return needsQuotes ? `"${value.replace(/"/g, '\\"')}"` : value;
+			}
+		}
+	}
+
 	private async submitForm(
 		profile: QuickAddProfile,
 		title: string,
-		resolvedProps: { name: string; value: string }[],
+		resolvedProps: { name: string; value: string; type: string }[],
 	): Promise<void> {
 		try {
 			const safeTitle = title.replace(/[\\/:*?"<>|]/g, '-');
@@ -156,15 +222,43 @@ export class QuickAddModal extends Modal {
 				await ensureFolder(this.app.vault, folder);
 			}
 
-			const fmLines = resolvedProps.map(({ name, value }) => {
+			let bodyContent = '';
+
+			// Load template if configured
+			if (profile.templateFile) {
+				const tplFile = this.app.vault.getAbstractFileByPath(profile.templateFile);
+				if (tplFile && 'extension' in tplFile) {
+					try {
+						bodyContent = await this.app.vault.read(tplFile as any);
+					} catch {
+						// ignore template read failure
+					}
+				}
+			}
+
+			const fmLines = resolvedProps.map(({ name, value, type }) => {
 				const key = name.includes(' ') || name.includes('-') ? `"${name}"` : name;
-				return `${key}: ${value}`;
+				return `${key}: ${this.formatValue(value, type)}`;
 			});
-			const content = fmLines.length > 0 ? `---\n${fmLines.join('\n')}\n---\n` : '';
+
+			let content: string;
+			if (fmLines.length > 0) {
+				// Check if template already has frontmatter
+				const tplFmMatch = bodyContent.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)/);
+				if (tplFmMatch) {
+					const existingFm = tplFmMatch[1];
+					const body = tplFmMatch[2] ?? '';
+					content = `---\n${existingFm}\n${fmLines.join('\n')}\n---\n${body}`;
+				} else {
+					content = `---\n${fmLines.join('\n')}\n---\n${bodyContent}`;
+				}
+			} else {
+				content = bodyContent;
+			}
 
 			const newFile = await this.app.vault.create(filePath, content);
 			this.close();
-			new Notice(`Created "${newFile.basename}"`);
+			this.app.workspace.getLeaf(false)?.openFile(newFile);
 		} catch (err) {
 			console.error('QuickAdd failed:', err);
 			new Notice('Failed to create note. Check the console for details.');

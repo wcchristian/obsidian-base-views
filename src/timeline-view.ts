@@ -6,6 +6,8 @@ import {
 } from 'obsidian';
 import BaseViewsPlugin from './main';
 import { writeProp } from './frontmatter';
+import { AUTO_PALETTE } from './util';
+import { QuickAddModal } from './quick-add-modal';
 
 export const VIEW_TYPE_BASE_TIMELINE = 'base-timeline-view';
 
@@ -34,6 +36,7 @@ interface TimelineItem {
 	done: boolean;
 	color: string | null;
 	groupKey: string;
+	sortOrder: number;
 	file: TFile;
 	entry: BasesEntry;
 }
@@ -93,13 +96,23 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 	private endProp: BasesPropertyId | null = null;
 	private doneProp: BasesPropertyId | null = null;
 	private subtitleProp: BasesPropertyId | null = null;
+	private sortOrderProp: BasesPropertyId | null = null;
 	private zoomLevel: ZoomLevel = 'week';
+
+	private daysVisible = 30;
+	private weeksVisible = 12;
+	private monthsVisible = 6;
+
+	private prevDaysVisible = 30;
+	private prevWeeksVisible = 12;
+	private prevMonthsVisible = 6;
 
 	private windowStart: Date | null = null;
 	private windowEnd: Date | null = null;
 	private cols: Date[] = [];
 
 	private items: TimelineItem[] = [];
+	private autoColorMap: Record<string, string> = {};
 	private rowYMap = new Map<string, number>();
 
 	// Drag state
@@ -122,6 +135,7 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 		this.endProp = this.config.getAsPropertyId('endDateProperty') ?? null;
 		this.doneProp = this.config.getAsPropertyId('doneProperty') ?? null;
 		this.subtitleProp = this.config.getAsPropertyId('subtitleProperty') ?? null;
+		this.sortOrderProp = this.config.getAsPropertyId('sortOrderProperty') ?? null;
 
 		const cfgZoom = this.config.get('zoomLevel');
 		if (cfgZoom === 'day' || cfgZoom === 'week' || cfgZoom === 'month') {
@@ -130,6 +144,26 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 				this.windowStart = null;
 				this.windowEnd = null;
 			}
+		}
+
+		const dv = this.config.get('daysVisible');
+		if (typeof dv === 'number' && dv >= 1) this.daysVisible = Math.floor(dv);
+		const wv = this.config.get('weeksVisible');
+		if (typeof wv === 'number' && wv >= 1) this.weeksVisible = Math.floor(wv);
+		const mv = this.config.get('monthsVisible');
+		if (typeof mv === 'number' && mv >= 1) this.monthsVisible = Math.floor(mv);
+
+		// Invalidate cached window when the active zoom's range changes
+		if (
+			this.daysVisible !== this.prevDaysVisible ||
+			this.weeksVisible !== this.prevWeeksVisible ||
+			this.monthsVisible !== this.prevMonthsVisible
+		) {
+			this.windowStart = null;
+			this.windowEnd = null;
+			this.prevDaysVisible = this.daysVisible;
+			this.prevWeeksVisible = this.weeksVisible;
+			this.prevMonthsVisible = this.monthsVisible;
 		}
 
 		this.wrap.empty();
@@ -186,6 +220,9 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 		const zWeek = zoomGroup.createEl('button', { text: 'Week', cls: 'bt-zoom' });
 		const zMonth = zoomGroup.createEl('button', { text: 'Month', cls: 'bt-zoom' });
 		this.zoomBtns = { day: zDay, week: zWeek, month: zMonth };
+
+		const addBtn = toolbar.createEl('button', { cls: 'bt-add-btn', title: 'Add new note', text: '+' });
+		addBtn.addEventListener('click', () => this.createTimelineNote());
 
 		const setZoom = (z: ZoomLevel) => {
 			this.zoomLevel = z;
@@ -268,6 +305,15 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 					if (sv && !(sv instanceof NullValue)) subtitle = sv.toString();
 				}
 
+				let sortOrder = Infinity;
+				if (this.sortOrderProp) {
+					const sv = entry.getValue(this.sortOrderProp);
+					if (sv && !(sv instanceof NullValue)) {
+						const n = Number(sv.toString());
+						if (!isNaN(n)) sortOrder = n;
+					}
+				}
+
 				this.items.push({
 					id: file.path,
 					title: file.basename,
@@ -278,10 +324,27 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 					done,
 					color: this.getItemColor(entry, viewColorMap),
 					groupKey: gKey,
+					sortOrder,
 					file,
 					entry,
 				});
 			}
+		}
+
+		// Build auto-color map when colorProperty set but no colorValues configured
+		this.autoColorMap = {};
+		const raw = (this.config.get('colorProperty') as string | undefined)?.trim() ?? '';
+		const propName = raw.startsWith('note.') ? raw.slice(5) : raw;
+		if (propName && Object.keys(this.getViewColorMap()).length === 0) {
+			const pid = `note.${propName}` as BasesPropertyId;
+			const unique = [...new Set(
+				this.items
+					.map(it => it.entry.getValue(pid))
+					.filter((v): v is NonNullable<typeof v> => !!v && !(v instanceof NullValue))
+					.map(v => v.toString().trim())
+					.filter(Boolean),
+			)].sort();
+			unique.forEach((v, i) => { this.autoColorMap[v] = AUTO_PALETTE[i % AUTO_PALETTE.length]; });
 		}
 	}
 
@@ -304,23 +367,10 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 			const val = entry.getValue(pid);
 			if (val && !(val instanceof NullValue)) {
 				const valStr = val.toString().trim();
-				if (viewColorMap[valStr]) return viewColorMap[valStr];
-				for (const g of this.plugin.settings.colorGroups) {
-					if (g.propertyName !== propName) continue;
-					if (g.colors[valStr]) return g.colors[valStr];
-				}
+				return viewColorMap[valStr] ?? this.autoColorMap[valStr] ?? null;
 			}
-			return null;
 		}
 
-		for (const g of this.plugin.settings.colorGroups) {
-			if (!g.propertyName) continue;
-			const pid = `note.${g.propertyName}` as BasesPropertyId;
-			const val = entry.getValue(pid);
-			if (!val || val instanceof NullValue) continue;
-			const c = g.colors[val.toString().trim()];
-			if (c) return c;
-		}
 		return null;
 	}
 
@@ -335,23 +385,37 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 		}
 
 		const today = new Date(); today.setHours(0, 0, 0, 0);
-		const defaultHalf = { day: 30, week: 42, month: 182 } as const;
 		const padDays = { day: 7, week: 28, month: 60 } as const;
 
 		if (!minStart || !maxEnd) {
-			const half = defaultHalf[this.zoomLevel];
-			minStart = new Date(today.getTime() - half * MS_PER_DAY);
-			maxEnd = new Date(today.getTime() + half * MS_PER_DAY);
+			// Use configured visible range, starting from today
+			const configuredDays = this.getConfiguredDays();
+			minStart = new Date(today);
+			maxEnd = new Date(today.getTime() + configuredDays * MS_PER_DAY);
 		} else {
+			// Use max of data range and configured range
+			const configuredDays = this.getConfiguredDays();
 			const pad = padDays[this.zoomLevel];
-			minStart = new Date(minStart.getTime() - pad * MS_PER_DAY);
-			maxEnd = new Date(maxEnd.getTime() + pad * MS_PER_DAY);
+			const dataMin = new Date(minStart.getTime() - pad * MS_PER_DAY);
+			const dataMax = new Date(maxEnd.getTime() + pad * MS_PER_DAY);
+			const cfgMin = new Date(today);
+			const cfgMax = new Date(today.getTime() + configuredDays * MS_PER_DAY);
+			minStart = dataMin < cfgMin ? dataMin : cfgMin;
+			maxEnd = dataMax > cfgMax ? dataMax : cfgMax;
 		}
 
 		this.windowStart = minStart;
 		this.windowEnd = maxEnd;
 		this.normalizeWindowBoundaries();
 		this.cols = this.buildCols();
+	}
+
+	private getConfiguredDays(): number {
+		switch (this.zoomLevel) {
+			case 'day': return this.daysVisible;
+			case 'week': return this.weeksVisible * 7;
+			case 'month': return this.monthsVisible * 30;
+		}
 	}
 
 	private normalizeWindowBoundaries() {
@@ -447,6 +511,9 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 
 		const isGrouped = this.items.some(i => i.groupKey);
 
+		const sortItems = (arr: TimelineItem[]) =>
+			this.sortOrderProp ? [...arr].sort((a, b) => a.sortOrder - b.sortOrder) : arr;
+
 		if (isGrouped) {
 			const order: string[] = [];
 			const byGroup = new Map<string, TimelineItem[]>();
@@ -457,12 +524,12 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 			}
 			for (const k of order) {
 				rowY = this.renderSwimlaneHeader(content, k, rowY, totalWidth);
-				for (const item of byGroup.get(k)!) {
+				for (const item of sortItems(byGroup.get(k)!)) {
 					rowY = this.renderItemRow(content, item, rowY, cw, colCount);
 				}
 			}
 		} else {
-			for (const item of this.items) {
+			for (const item of sortItems(this.items)) {
 				rowY = this.renderItemRow(content, item, rowY, cw, colCount);
 			}
 		}
@@ -574,11 +641,13 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 
 		const titleEl = label.createDiv('bt-row-title');
 		titleEl.textContent = item.title;
+		titleEl.title = item.title;
 		titleEl.onclick = () => this.app.workspace.getLeaf(false)?.openFile(item.file);
 
 		if (item.subtitle) {
 			const subEl = label.createDiv('bt-row-subtitle');
 			subEl.textContent = item.subtitle;
+			subEl.title = item.subtitle;
 		}
 
 		// Track cells (one per column, for grid lines and shading)
@@ -653,6 +722,7 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 			}
 			// Label
 			const labelEl = bar.createSpan({ cls: 'bt-bar-label', text: item.title });
+			labelEl.title = item.title;
 			// Right resize handle
 			const handleR = bar.createDiv('bt-bar-handle bt-bar-handle-right');
 
@@ -907,5 +977,11 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 		const todayPx = LABEL_WIDTH + this.dateToPixel(today);
 		const targetLeft = todayPx - scroll.clientWidth / 2;
 		scroll.scrollLeft = Math.max(0, targetLeft);
+	}
+
+	// ── Create new note ────────────────────────────────────────────────────────
+
+	private createTimelineNote() {
+		new QuickAddModal(this.app, this.plugin.settings, this.plugin).open();
 	}
 }

@@ -6,6 +6,7 @@ import {
 import { BaseCalendarView, VIEW_TYPE_BASE_CALENDAR } from './calendar-view';
 import { BaseKanbanView, VIEW_TYPE_BASE_KANBAN } from './kanban-view';
 import { BaseTimelineView, VIEW_TYPE_BASE_TIMELINE } from './timeline-view';
+import { BaseListView, VIEW_TYPE_BASE_LIST } from './list-view';
 import { BaseViewsSettings, DEFAULT_SETTINGS, BaseViewsSettingTab, migrateSettings } from './settings';
 import { QuickAddModal } from './quick-add-modal';
 
@@ -46,6 +47,7 @@ export default class BaseViewsPlugin extends Plugin {
             { type: 'property', displayName: 'Date property', key: 'dateProperty' },
             { type: 'property', displayName: 'End date property', key: 'endDateProperty' },
             { type: 'property', displayName: 'Done property', key: 'doneProperty' },
+            { type: 'property', displayName: 'Sort order property', key: 'sortOrderProperty' },
           ],
         },
         {
@@ -70,13 +72,13 @@ export default class BaseViewsPlugin extends Plugin {
             } as BasesSliderOption,
             {
               type: 'toggle',
-              displayName: 'Expand month rows to fit all events',
+              displayName: 'Expand month rows (month view)',
               key: 'monthExpand',
               default: false,
             } as BasesToggleOption,
             {
               type: 'slider',
-              displayName: 'Agenda days shown',
+              displayName: 'Agenda day count (agenda view)',
               key: 'agendaDays',
               default: 30,
               min: 1,
@@ -84,18 +86,20 @@ export default class BaseViewsPlugin extends Plugin {
               step: 1,
             } as BasesSliderOption,
             {
-              type: 'dropdown',
-              displayName: 'Sort events',
-              key: 'sortMode',
-              default: 'manual',
-              options: {
-                manual: 'Manual (drag)',
-                titleAsc: 'Title A→Z',
-                titleDesc: 'Title Z→A',
-                startAsc: 'Start date ↑',
-                startDesc: 'Start date ↓',
-              },
-            } as BasesDropdownOption,
+              type: 'slider',
+              displayName: 'Days per week (week view)',
+              key: 'weekDays',
+              default: 7,
+              min: 1,
+              max: 10,
+              step: 1,
+            } as BasesSliderOption,
+            {
+              type: 'toggle',
+              displayName: 'Rolling week (week view)',
+              key: 'weekRolling',
+              default: false,
+            } as BasesToggleOption,
           ],
         },
         {
@@ -158,28 +162,29 @@ export default class BaseViewsPlugin extends Plugin {
         if (!this.settings.enableKanban) {
           return new DisabledView(controller, containerEl, VIEW_TYPE_BASE_KANBAN, 'Kanban');
         }
-        return new BaseKanbanView(controller, containerEl);
+        return new BaseKanbanView(controller, containerEl, this);
       },
       options: () => ([
         {
           type: 'group',
-          displayName: 'Layout',
+          displayName: 'Properties',
           items: [
             { type: 'property', displayName: 'Sub-group by', key: 'subgroupProperty' },
+            { type: 'property', displayName: 'Sort order property', key: 'sortOrderProperty' },
+            { type: 'property', displayName: 'Card title property', key: 'cardTitleProperty' },
+            { type: 'property', displayName: 'Done property', key: 'doneProperty' },
+          ],
+        },
+        {
+          type: 'group',
+          displayName: 'Layout',
+          items: [
             {
               type: 'toggle',
               displayName: 'Show empty columns',
               key: 'showEmptyColumns',
               default: true,
             } as BasesToggleOption,
-          ],
-        },
-        {
-          type: 'group',
-          displayName: 'Cards',
-          items: [
-            { type: 'property', displayName: 'Card title property', key: 'cardTitleProperty' },
-            { type: 'property', displayName: 'Done property', key: 'doneProperty' },
           ],
         },
         {
@@ -220,7 +225,7 @@ export default class BaseViewsPlugin extends Plugin {
         },
         {
           type: 'group',
-          displayName: 'Colors',
+          displayName: 'Color',
           items: [
             {
               type: 'multitext',
@@ -295,6 +300,7 @@ export default class BaseViewsPlugin extends Plugin {
             { type: 'property', displayName: 'End date', key: 'endDateProperty' },
             { type: 'property', displayName: 'Done', key: 'doneProperty' },
             { type: 'property', displayName: 'Subtitle', key: 'subtitleProperty' },
+            { type: 'property', displayName: 'Sort order property', key: 'sortOrderProperty' },
           ],
         },
         {
@@ -303,11 +309,109 @@ export default class BaseViewsPlugin extends Plugin {
           items: [
             {
               type: 'dropdown',
-              displayName: 'Zoom level',
+              displayName: 'Default zoom level',
               key: 'zoomLevel',
               default: 'week',
               options: { day: 'Day', week: 'Week', month: 'Month' },
             } as BasesDropdownOption,
+            {
+              type: 'slider',
+              displayName: 'Days visible (day zoom)',
+              key: 'daysVisible',
+              default: 30,
+              min: 7,
+              max: 120,
+              step: 1,
+            } as BasesSliderOption,
+            {
+              type: 'slider',
+              displayName: 'Weeks visible (week zoom)',
+              key: 'weeksVisible',
+              default: 12,
+              min: 4,
+              max: 52,
+              step: 1,
+            } as BasesSliderOption,
+            {
+              type: 'slider',
+              displayName: 'Months visible (month zoom)',
+              key: 'monthsVisible',
+              default: 6,
+              min: 3,
+              max: 24,
+              step: 1,
+            } as BasesSliderOption,
+          ],
+        },
+        {
+          type: 'group',
+          displayName: 'Color',
+          items: [
+            { type: 'property', displayName: 'Color by property', key: 'colorProperty' },
+            {
+              type: 'multitext',
+              displayName: 'Value colors (value:color)',
+              key: 'colorValues',
+              default: [],
+            } as BasesMultitextOption,
+          ],
+        },
+        {
+          type: 'group',
+          displayName: 'Background image',
+          items: [
+            {
+              type: 'text',
+              displayName: 'Image URL or vault path',
+              key: 'bgImage',
+              placeholder: 'https://... or path/to/image.png',
+            } as BasesTextOption,
+            {
+              type: 'dropdown',
+              displayName: 'Fit',
+              key: 'bgFit',
+              default: 'cover',
+              options: { cover: 'Cover', contain: 'Contain', stretch: 'Stretch' },
+            } as BasesDropdownOption,
+            {
+              type: 'slider',
+              displayName: 'Blur',
+              key: 'bgBlur',
+              default: 0,
+              min: 0,
+              max: 20,
+              step: 1,
+            } as BasesSliderOption,
+            {
+              type: 'slider',
+              displayName: 'Opacity',
+              key: 'bgOpacity',
+              default: 0.3,
+              min: 0,
+              max: 1,
+              step: 0.05,
+            } as BasesSliderOption,
+          ],
+        },
+      ] as BasesAllOptions[]),
+    });
+
+    this.registerBasesView(VIEW_TYPE_BASE_LIST, {
+      name: 'List',
+      icon: 'list',
+      factory: (controller, containerEl) => {
+        if (!this.settings.enableList) {
+          return new DisabledView(controller, containerEl, VIEW_TYPE_BASE_LIST, 'List');
+        }
+        return new BaseListView(controller, containerEl, this);
+      },
+      options: () => ([
+        {
+          type: 'group',
+          displayName: 'Properties',
+          items: [
+            { type: 'property', displayName: 'Done property', key: 'doneProperty' },
+            { type: 'property', displayName: 'Sort order property', key: 'sortOrderProperty' },
           ],
         },
         {
