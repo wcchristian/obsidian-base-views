@@ -1,0 +1,14 @@
+order: []
+properties:
+  - status
+  - priority
+  - tags
+view: base-list-view
+viewOptions:
+  doneProperty: "note.done"
+  sortOrderProperty: "note.sort_order"
+  colorProperty: "note.priority"
+  colorValues:
+    - "high:#E74C3C"
+    - "medium:#F39C12"
+    - "low:#95A5A6"

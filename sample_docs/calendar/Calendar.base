@@ -1,0 +1,11 @@
+order: []
+properties: []
+view: calendar
+viewOptions:
+  dateProperty: note.date
+  doneProperty: note.done
+  colorProperty: note.category
+  colorValues:
+    - "work:#4A90D9"
+    - "personal:#6DB33F"
+    - "tasks:#E67E22"

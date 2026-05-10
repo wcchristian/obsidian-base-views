@@ -1,0 +1,12 @@
+order: []
+properties: []
+view: kanban
+viewOptions:
+  columnOrder:
+    - "Todo"
+    - "Doing"
+    - "Done"
+  columnColors:
+    - "Todo:#95A5A6"
+    - "Doing:#3498DB"
+    - "Done:#27AE60"

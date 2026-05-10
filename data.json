@@ -1,0 +1,49 @@
+{
+  "enableCalendar": true,
+  "enableKanban": true,
+  "enableTimeline": true,
+  "enableList": true,
+  "localOrder": {
+    "2026-05-08": [
+      "zzTest/_tasks/Develop Obsidian Calendar and Kanban Plugin.md",
+      "zzTest/_tasks/Mini Obsidian-Todoist Refresh.md",
+      "zzTest/_tasks/Wubby Stream.md"
+    ],
+    "2026-05-09": [
+      "zzTest/_tasks/Cash-Schedule for Shooting League.md",
+      "zzTest/_tasks/Clean Litter Box.md",
+      "zzTest/_tasks/Develop Obsidian Calendar and Kanban Plugin.md",
+      "zzTest/_tasks/Mini Obsidian-Todoist Refresh.md",
+      "zzTest/_tasks/Watch The Boys.md",
+      "zzTest/_tasks/Laundry.md",
+      "zzTest/_tasks/Wubby Stream.md"
+    ],
+    "2026-05-10": [
+      "zzTest/_tasks/Consider which AI Subscriptions to Use or Not.md",
+      "zzTest/_tasks/Clean Room.md",
+      "zzTest/_tasks/Dev.md",
+      "zzTest/_tasks/WoW.md",
+      "zzTest/_tasks/Guitar Practice Back on Track.md",
+      "zzTest/_tasks/Weekly Refresh.md"
+    ]
+  },
+  "quickAddProfiles": [
+    {
+      "id": "1778288371196",
+      "name": "New Profile",
+      "folder": "zzTest/_tasks",
+      "props": [
+        {
+          "name": "date",
+          "value": "",
+          "type": "text"
+        },
+        {
+          "name": "project",
+          "value": "",
+          "type": "text"
+        }
+      ]
+    }
+  ]
+}

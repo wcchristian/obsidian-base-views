@@ -1,0 +1,14 @@
+order: []
+properties: []
+view: timeline
+viewOptions:
+  dateProperty: note.date
+  endDateProperty: note.endDate
+  doneProperty: note.done
+  subtitleProperty: note.subtitle
+  colorProperty: note.category
+  colorValues:
+    - "feature:#4A90D9"
+    - "bug:#E74C3C"
+    - "research:#9B59B6"
+    - "release:#27AE60"
