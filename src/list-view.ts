@@ -226,7 +226,7 @@ export class BaseListView extends BasesView implements HoverParent {
 				e.preventDefault();
 				e.stopPropagation();
 				const newVal = !item.done;
-				await writeProp(this.app.vault, item.file, this.doneProp!, newVal ? 'true' : 'false');
+				await writeProp(this.app, item.file, this.doneProp!, newVal);
 				item.done = newVal;
 				row.toggleClass('bv-list-row-done', newVal);
 				cb.toggleClass('bv-list-check-on', newVal);
@@ -252,6 +252,17 @@ export class BaseListView extends BasesView implements HoverParent {
 			const leaf = this.app.workspace.getLeaf(Keymap.isModEvent(e as MouseEvent));
 			leaf?.openFile(item.file);
 		};
+
+		// Middle-click opens in a new tab, like a normal Obsidian link
+		row.addEventListener('mousedown', e => {
+			if (e.button === 1) e.preventDefault();
+		});
+		row.addEventListener('auxclick', e => {
+			if (e.button !== 1) return;
+			e.preventDefault();
+			e.stopPropagation();
+			this.app.workspace.getLeaf('tab').openFile(item.file);
+		});
 
 		if (color) {
 			row.addEventListener('mouseenter', () => {
@@ -304,26 +315,42 @@ export class BaseListView extends BasesView implements HoverParent {
 			tog.onclick = async e => {
 				e.stopPropagation();
 				const newVal = !checked;
-				await writeProp(this.app.vault, item.file, pid, newVal ? 'true' : 'false');
+				await writeProp(this.app, item.file, pid, newVal);
 				tog.toggleClass('bc-toggle-on', newVal);
 			};
 		} else if (val instanceof StringValue || val instanceof NumberValue || val instanceof TagValue || val instanceof DateValue) {
 			const span = parent.createSpan({ cls: 'bc-prop-val', text: val.toString() });
-			span.onclick = async e => {
+			span.onclick = e => {
 				e.stopPropagation();
-				const input = parent.createEl('input', { cls: 'bc-prop-input', value: val.toString(), type: 'text' });
+				const raw = val.toString();
+				const isDate = val instanceof DateValue;
+				const hasTime = isDate && raw.includes('T');
+				const input = parent.createEl('input', {
+					cls: 'bc-prop-input',
+					type: isDate ? (hasTime ? 'datetime-local' : 'date') : 'text',
+				});
+				input.value = isDate ? raw.slice(0, hasTime ? 16 : 10) : raw;
 				span.style.display = 'none';
 				input.focus();
-				input.select();
+				if (!isDate) input.select();
+				let settled = false;
 				const commit = async () => {
-					await writeProp(this.app.vault, item.file, pid, input.value);
+					if (settled) return;
+					settled = true;
+					await writeProp(this.app, item.file, pid, input.value);
 					input.remove();
 					span.style.display = '';
 				};
-				input.onblur = commit;
+				const cancel = () => {
+					if (settled) return;
+					settled = true;
+					input.remove();
+					span.style.display = '';
+				};
+				input.onblur = () => void commit();
 				input.onkeydown = ev => {
-					if (ev.key === 'Enter') { ev.preventDefault(); commit(); }
-					if (ev.key === 'Escape') { input.remove(); span.style.display = ''; }
+					if (ev.key === 'Enter') { ev.preventDefault(); void commit(); }
+					if (ev.key === 'Escape') { ev.preventDefault(); cancel(); }
 				};
 			};
 		} else {
@@ -412,7 +439,7 @@ export class BaseListView extends BasesView implements HoverParent {
 		const sp = this.sortOrderProp;
 		for (let i = 0; i < ids.length; i++) {
 			const file = this.app.vault.getFileByPath(ids[i]);
-			if (file) await writeProp(this.app.vault, file, sp, String(i * 10));
+			if (file) await writeProp(this.app, file, sp, i * 10);
 		}
 	}
 
@@ -425,7 +452,7 @@ export class BaseListView extends BasesView implements HoverParent {
 		const file = this.app.vault.getFileByPath(itemId);
 		if (!file) return;
 		try {
-			await writeProp(this.app.vault, file, groupByPid, newGroupKey === NULL_KEY ? '' : newGroupKey);
+			await writeProp(this.app, file, groupByPid, newGroupKey === NULL_KEY ? '' : newGroupKey);
 		} catch (err) {
 			console.error(err);
 			new Notice('Failed to update frontmatter');
@@ -484,7 +511,8 @@ export class BaseListView extends BasesView implements HoverParent {
 	}
 
 	private createListItem(_groupKey: string) {
-		new QuickAddModal(this.app, this.plugin.settings, this.plugin).open();
+		const folder = ((this.config.get('newNoteFolder') as string) ?? '').trim();
+		new QuickAddModal(this.app, this.plugin.settings, this.plugin, undefined, folder || undefined).open();
 	}
 }
 

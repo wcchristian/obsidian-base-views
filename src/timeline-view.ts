@@ -714,7 +714,7 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 				cb.addEventListener('click', async (e) => {
 					e.stopPropagation();
 					const newVal = !item.done;
-					await writeProp(this.app.vault, item.file, this.doneProp!, newVal ? 'true' : 'false');
+					await writeProp(this.app, item.file, this.doneProp!, newVal);
 					item.done = newVal;
 					bar.toggleClass('bt-bar-done', newVal);
 					cb.toggleClass('bt-bar-check-on', newVal);
@@ -778,7 +778,7 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 				const deltaX = e.clientX - this.dragStartX;
 				const newStart = this.snapDate(new Date(this.dragStartDate!.getTime() + this.deltaXToMs(deltaX)));
 				if (newStart < this.dragEndDate! && DK(newStart) !== DK(this.dragStartDate!)) {
-					await writeProp(this.app.vault, item.file, this.dateProp!, DK(newStart));
+					await writeProp(this.app, item.file, this.dateProp!, DK(newStart));
 					item.start = newStart;
 					item.isSingleDay = newStart.getTime() === item.end.getTime();
 					this.updateBarPosition(bar, item.start, item.end);
@@ -819,7 +819,7 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 				const newEnd = this.snapDate(new Date(this.dragEndDate!.getTime() + this.deltaXToMs(deltaX)));
 				if (newEnd >= this.dragStartDate! && DK(newEnd) !== DK(this.dragEndDate!)) {
 					if (this.endProp) {
-						await writeProp(this.app.vault, item.file, this.endProp, DK(newEnd));
+						await writeProp(this.app, item.file, this.endProp, DK(newEnd));
 					}
 					item.end = newEnd;
 					item.isSingleDay = item.start.getTime() === newEnd.getTime();
@@ -869,9 +869,9 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 				const duration = this.dragEndDate!.getTime() - this.dragStartDate!.getTime();
 				const newEnd = new Date(newStart.getTime() + duration);
 				if (DK(newStart) !== DK(this.dragStartDate!)) {
-					await writeProp(this.app.vault, item.file, this.dateProp!, DK(newStart));
+					await writeProp(this.app, item.file, this.dateProp!, DK(newStart));
 					if (this.endProp && !item.isSingleDay) {
-						await writeProp(this.app.vault, item.file, this.endProp, DK(newEnd));
+						await writeProp(this.app, item.file, this.endProp, DK(newEnd));
 					}
 					item.start = newStart;
 					item.end = newEnd;
@@ -926,7 +926,7 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 				const modal = new DatePromptModal(this.app, item.start, 'Change start date');
 				const newDate = await modal.open();
 				if (!newDate || DK(newDate) === DK(item.start)) return;
-				await writeProp(this.app.vault, item.file, this.dateProp, DK(newDate));
+				await writeProp(this.app, item.file, this.dateProp, DK(newDate));
 				item.start = newDate;
 				if (newDate > item.end) item.end = new Date(newDate);
 				this.updateBarPosition(bar, item.start, item.end);
@@ -938,7 +938,7 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 					const newDate = await modal.open();
 					if (!newDate || DK(newDate) === DK(item.end)) return;
 					if (newDate >= item.start) {
-						await writeProp(this.app.vault, item.file, this.endProp!, DK(newDate));
+						await writeProp(this.app, item.file, this.endProp!, DK(newDate));
 						item.end = newDate;
 						item.isSingleDay = item.start.getTime() === newDate.getTime();
 						this.updateBarPosition(bar, item.start, item.end);
@@ -952,7 +952,7 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 					.setIcon(item.done ? 'circle' : 'check-circle')
 					.onClick(async () => {
 						const newVal = !item.done;
-						await writeProp(this.app.vault, item.file, this.doneProp!, newVal ? 'true' : 'false');
+						await writeProp(this.app, item.file, this.doneProp!, newVal);
 						item.done = newVal;
 						bar.toggleClass('bt-bar-done', newVal);
 						const cb = bar.querySelector('.bt-bar-check');
@@ -982,6 +982,7 @@ export class BaseTimelineView extends BasesView implements HoverParent {
 	// ── Create new note ────────────────────────────────────────────────────────
 
 	private createTimelineNote() {
-		new QuickAddModal(this.app, this.plugin.settings, this.plugin).open();
+		const folder = ((this.config.get('newNoteFolder') as string) ?? '').trim();
+		new QuickAddModal(this.app, this.plugin.settings, this.plugin, undefined, folder || undefined).open();
 	}
 }

@@ -1,13 +1,14 @@
 import {
 	BasesView, TFile, QueryController, HoverParent, HoverPopover, Keymap,
 	BasesEntry, BasesPropertyId, parsePropertyId,
-	Value, BooleanValue, StringValue, NumberValue, DateValue, TagValue, NullValue,
+	Value, BooleanValue, StringValue, NumberValue, DateValue, TagValue, NullValue, ListValue,
 	Menu, Notice,
 } from 'obsidian';
+import Sortable from 'sortablejs';
 import { writeProp } from './frontmatter';
+import { createNoteInFolder } from './create-note';
 import { AUTO_PALETTE } from './util';
 import BaseViewsPlugin from './main';
-import { QuickAddModal } from './quick-add-modal';
 
 export const VIEW_TYPE_BASE_KANBAN = 'base-kanban-view';
 
@@ -32,16 +33,15 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 	private colorMap: Map<string, string> = new Map();
 	private autoColorMap: Map<string, string> = new Map();
 
-	// drag state — cards
-	private dragCardId: string | null = null;
-	private dragCardSourceCol: string | null = null;
-	private dragCardSourceSubgroup: string | null = null;
-	private dropIndicator: HTMLElement | null = null;
+	// SortableJS drag-and-drop state
+	private sortables: Sortable[] = [];
+	// Per-instance group name so two open kanban panes can't cross-drag
+	private readonly cardGroup = 'bk-cards-' + Math.random().toString(36).slice(2);
+	private isDragging = false;
+	private pendingRefresh = false;
 
-	// drag state — columns
-	private dragColKey: string | null = null;
-	private dragColSubgroup: string | null = null;
-	private colDropIndicator: HTMLElement | null = null;
+	// pending inline-add ghost card (survives re-renders)
+	private pendingGhost: { colKey: string; subgroupKey: string; text: string } | null = null;
 
 	constructor(ctrl: QueryController, parent: HTMLElement, private plugin: BaseViewsPlugin) {
 		super(ctrl);
@@ -49,9 +49,27 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 	}
 
 	async onDataUpdated(): Promise<void> {
+		// Never rebuild the DOM mid-drag: Sortable is tracking live nodes.
+		if (this.isDragging) {
+			this.pendingRefresh = true;
+			return;
+		}
+		this.destroySortables();
 		this.colorMap = this.parseColorMap();
 		this.wrap.empty();
 		this.buildBoard();
+	}
+
+	private destroySortables() {
+		for (const s of this.sortables) {
+			try { s.destroy(); } catch { /* node already detached */ }
+		}
+		this.sortables = [];
+	}
+
+	onunload() {
+		this.destroySortables();
+		super.onunload();
 	}
 
 	// ── config helpers ──────────────────────────────────────────────────────
@@ -226,6 +244,19 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 		return 'Untitled';
 	}
 
+	/** Resolve a cover-image value (URL, vault path, or [[wikilink]]) to a displayable URL. */
+	private resolveImageUrl(raw: string, sourcePath: string): string | null {
+		let trimmed = raw.trim();
+		if (!trimmed) return null;
+		const wiki = trimmed.match(/^!?\[\[([^\]|]+)(\|[^\]]*)?\]\]$/);
+		if (wiki) trimmed = wiki[1].trim();
+		if (/^(https?:|data:|app:|file:)/i.test(trimmed)) return trimmed;
+		const file = this.app.metadataCache.getFirstLinkpathDest(trimmed, sourcePath)
+			?? this.app.vault.getAbstractFileByPath(trimmed);
+		if (file instanceof TFile) return this.app.vault.getResourcePath(file);
+		return null;
+	}
+
 	private resolveBgUrl(raw: string): string {
 		const trimmed = raw.trim();
 		if (/^(https?:|data:|app:|file:)/i.test(trimmed)) return trimmed;
@@ -362,6 +393,18 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 	) {
 		const board = container.createDiv('bk-board');
 
+		// Column reordering (drag by header)
+		this.sortables.push(new Sortable(board, {
+			animation: 150,
+			draggable: '.bk-col',
+			handle: '.bk-col-hdr',
+			filter: '.bk-add, .bk-kebab',
+			preventOnFilter: false,
+			ghostClass: 'bk-col-ghost',
+			onStart: () => { this.isDragging = true; },
+			onEnd: (evt) => void this.handleColumnDrop(evt),
+		}));
+
 		const byCol = new Map<string, KanbanCard[]>();
 		for (const c of cards) {
 			if (!byCol.has(c.columnKey)) byCol.set(c.columnKey, []);
@@ -420,8 +463,6 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 			hdr.style.background = `color-mix(in srgb, ${color} 22%, var(--background-secondary))`;
 		}
 
-		hdr.setAttribute('draggable', 'true');
-
 		if (collapsed) {
 			hdr.createSpan({ cls: 'bk-col-title', text: `${colKey} · ${cards.length}` });
 		} else {
@@ -432,9 +473,10 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 		// ── Add card button ──
 		if (!collapsed) {
 			const addBtn = hdr.createEl('button', { cls: 'bk-add', title: 'Add card', text: '+' });
-			addBtn.addEventListener('click', async (e) => {
+			addBtn.addEventListener('click', (e) => {
 				e.stopPropagation();
-				await this.createKanbanCard(colKey);
+				const body = col.querySelector('.bk-col-body') as HTMLElement | null;
+				if (body) this.showGhostCard(body, colKey, subgroupKey);
 			});
 		}
 
@@ -497,80 +539,18 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 			menu.showAtMouseEvent(e);
 		});
 
-		// Header drag (column reorder)
-		hdr.addEventListener('dragstart', (e) => {
-			e.stopPropagation();
-			this.dragColKey = colKey;
-			this.dragColSubgroup = subgroupKey;
-			e.dataTransfer?.setData('text/plain', `col:${colKey}`);
-			e.dataTransfer!.effectAllowed = 'move';
-			setTimeout(() => col.addClass('bk-col-dragging'), 0);
-		});
-		hdr.addEventListener('dragend', () => {
-			col.removeClass('bk-col-dragging');
-			this.dragColKey = null;
-			this.dragColSubgroup = null;
-			this.removeColDropIndicator();
-		});
-
 		if (collapsed) {
-			// Collapsed: whole column handles both card drops and col-reorder drops
-			col.addEventListener('dragover', (e) => {
-				if (this.dragCardId) {
-					e.preventDefault();
-					e.stopPropagation();
-					e.dataTransfer!.dropEffect = 'move';
-					col.addClass('bk-drop');
-					return;
-				}
-				if (!this.dragColKey || this.dragColKey === colKey) return;
-				e.preventDefault();
-				e.dataTransfer!.dropEffect = 'move';
-				this.positionColDropIndicator(e, board);
-			});
-			col.addEventListener('dragleave', (e) => {
-				if (!col.contains(e.relatedTarget as Node)) {
-					col.removeClass('bk-drop');
-					this.removeColDropIndicator();
-				}
-			});
-			col.addEventListener('drop', async (e) => {
-				if (this.dragCardId) {
-					e.preventDefault();
-					e.stopPropagation();
-					col.removeClass('bk-drop');
-					const cardId = this.dragCardId;
-					await this.moveCard(cardId, colKey, subgroupKey, this.dragCardSourceSubgroup ?? '');
-					this.dragCardId = null;
-					this.dragCardSourceCol = null;
-					this.dragCardSourceSubgroup = null;
-					return;
-				}
-				if (!this.dragColKey || this.dragColKey === colKey) return;
-				e.preventDefault();
-				this.removeColDropIndicator();
-				await this.applyColReorder(this.dragColKey, colKey);
-			});
+			// Collapsed: invisible body registered in the card group so cards can be dropped here
+			const body = col.createDiv('bk-col-body bk-col-body-collapsed');
+			this.sortables.push(new Sortable(body, {
+				group: this.cardGroup,
+				sort: false,
+				animation: 150,
+				draggable: '.bk-card',
+				onStart: () => { this.isDragging = true; },
+				onEnd: (evt) => void this.handleCardDrop(evt),
+			}));
 		} else {
-			// Expanded: col-reorder on col, card drops on body
-			col.addEventListener('dragover', (e) => {
-				if (!this.dragColKey || this.dragColKey === colKey) return;
-				if (this.dragCardId) return;
-				e.preventDefault();
-				e.dataTransfer!.dropEffect = 'move';
-				this.positionColDropIndicator(e, board);
-			});
-			col.addEventListener('dragleave', (e) => {
-				if (!board.contains(e.relatedTarget as Node)) this.removeColDropIndicator();
-			});
-			col.addEventListener('drop', async (e) => {
-				if (!this.dragColKey || this.dragColKey === colKey) return;
-				if (this.dragCardId) return;
-				e.preventDefault();
-				this.removeColDropIndicator();
-				await this.applyColReorder(this.dragColKey, colKey);
-			});
-
 			const body = col.createDiv('bk-col-body');
 			for (const card of cards) {
 				this.renderCard(body, card, bucketKey, donePid);
@@ -583,45 +563,44 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 				}
 			}
 
-			body.addEventListener('dragover', (e) => {
-				if (!this.dragCardId) return;
-				e.preventDefault();
-				e.stopPropagation();
-				e.dataTransfer!.dropEffect = 'move';
-				col.addClass('bk-drop');
-				this.positionCardDropIndicator(e, body);
-			});
-			body.addEventListener('dragleave', (e) => {
-				if (!col.contains(e.relatedTarget as Node)) {
-					col.removeClass('bk-drop');
-					this.removeCardDropIndicator();
-				}
-			});
-			body.addEventListener('drop', async (e) => {
-				if (!this.dragCardId) return;
-				e.preventDefault();
-				e.stopPropagation();
-				col.removeClass('bk-drop');
+			// Restore an in-progress ghost card after a re-render
+			if (this.pendingGhost && this.pendingGhost.colKey === colKey && this.pendingGhost.subgroupKey === subgroupKey) {
+				this.showGhostCard(body, colKey, subgroupKey, this.pendingGhost.text);
+			}
 
-				const cardId = this.dragCardId;
-				const srcCol = this.dragCardSourceCol;
-
-				if (srcCol === colKey && this.dragCardSourceSubgroup === subgroupKey) {
-					await this.reorderCard(cardId, body, bucketKey);
-				} else {
-					this.removeCardDropIndicator();
-					await this.moveCard(cardId, colKey, subgroupKey, this.dragCardSourceSubgroup ?? '');
-				}
-				this.dragCardId = null;
-				this.dragCardSourceCol = null;
-				this.dragCardSourceSubgroup = null;
-			});
+			// Card sorting & cross-column moves
+			this.sortables.push(new Sortable(body, {
+				group: this.cardGroup,
+				animation: 150,
+				draggable: '.bk-card:not(.bk-ghost-card)',
+				filter: 'input, .bk-toggle, .bk-check, .bk-prop-input',
+				preventOnFilter: false,
+				ghostClass: 'bk-card-ghost',
+				onStart: () => { this.isDragging = true; },
+				onEnd: (evt) => void this.handleCardDrop(evt),
+			}));
 		}
 	}
 
 	private renderCard(container: HTMLElement, card: KanbanCard, bucketKey: string, donePid: BasesPropertyId | null) {
 		const el = container.createDiv('bk-card' + (card.done ? ' bk-card-done' : ''));
 		el.dataset.cardId = card.id;
+
+		// Cover image banner
+		const coverPid = this.config.getAsPropertyId('coverImageProperty');
+		if (coverPid) {
+			let coverVal: Value | null = card.entry.getValue(coverPid);
+			if (coverVal instanceof ListValue) coverVal = coverVal.length() ? coverVal.get(0) : null;
+			if (coverVal && !(coverVal instanceof NullValue)) {
+				const url = this.resolveImageUrl(coverVal.toString(), card.file.path);
+				if (url) {
+					const cover = el.createDiv('bk-card-cover');
+					const img = cover.createEl('img');
+					img.src = url;
+					img.addEventListener('error', () => cover.remove());
+				}
+			}
+		}
 
 		const titleRow = el.createDiv('bk-card-title');
 
@@ -632,14 +611,14 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 				e.preventDefault();
 				e.stopPropagation();
 				const newVal = !card.done;
-				await writeProp(this.app.vault, card.file, donePid, newVal ? 'true' : 'false');
+				await writeProp(this.app, card.file, donePid, newVal);
 				card.done = newVal;
 				el.toggleClass('bk-card-done', newVal);
 				cb.toggleClass('bk-check-on', newVal);
 			});
 		}
 
-		const link = titleRow.createEl('a', { text: card.title, cls: 'bk-card-link', href: '#' });
+		const link = titleRow.createEl('a', { text: card.title, cls: 'bk-card-link internal-link', href: '#' });
 		link.addEventListener('click', (e) => {
 			e.preventDefault();
 			e.stopPropagation();
@@ -661,6 +640,17 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 			leaf?.openFile(card.file);
 		});
 
+		// Middle-click opens in a new tab, like a normal Obsidian link
+		el.addEventListener('mousedown', (e) => {
+			if (e.button === 1) e.preventDefault();
+		});
+		el.addEventListener('auxclick', (e) => {
+			if (e.button !== 1) return;
+			e.preventDefault();
+			e.stopPropagation();
+			this.app.workspace.getLeaf('tab').openFile(card.file);
+		});
+
 		el.addEventListener('contextmenu', (e) => {
 			e.preventDefault();
 			e.stopPropagation();
@@ -674,6 +664,7 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 				const { name } = parsePropertyId(pid);
 				if (name === 'name') continue;
 				if (donePid && pid === donePid) continue;
+				if (coverPid && pid === coverPid) continue;
 				const val = card.entry.getValue(pid);
 				if (!val || val instanceof NullValue) continue;
 				const row = props.createDiv('bk-prop-row');
@@ -682,23 +673,6 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 			}
 		}
 
-		el.setAttribute('draggable', 'true');
-		el.addEventListener('dragstart', (e) => {
-			e.stopPropagation();
-			e.dataTransfer?.setData('text/plain', card.id);
-			e.dataTransfer!.effectAllowed = 'move';
-			this.dragCardId = card.id;
-			this.dragCardSourceCol = card.columnKey;
-			this.dragCardSourceSubgroup = card.subgroupKey;
-			setTimeout(() => el.addClass('bk-dragging'), 0);
-		});
-		el.addEventListener('dragend', () => {
-			el.removeClass('bk-dragging');
-			this.dragCardId = null;
-			this.dragCardSourceCol = null;
-			this.dragCardSourceSubgroup = null;
-			this.removeCardDropIndicator();
-		});
 	}
 
 	private renderPropVal(parent: HTMLElement, val: Value, card: KanbanCard, pid: BasesPropertyId) {
@@ -709,35 +683,87 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 			tog.addEventListener('click', async (e) => {
 				e.stopPropagation();
 				const newVal = !checked;
-				await writeProp(this.app.vault, card.file, pid, newVal ? 'true' : 'false');
+				await writeProp(this.app, card.file, pid, newVal);
 				tog.toggleClass('bk-toggle-on', newVal);
 			});
-		} else if (
-			val instanceof StringValue || val instanceof NumberValue ||
-			val instanceof TagValue || val instanceof DateValue
-		) {
-			const span = parent.createSpan({ cls: 'bk-prop-val', text: val.toString() });
-			span.addEventListener('click', async (e) => {
+		} else if (val instanceof ListValue) {
+			const items: string[] = [];
+			for (let i = 0; i < val.length(); i++) {
+				const item = val.get(i);
+				if (item && !(item instanceof NullValue)) items.push(item.toString());
+			}
+			const row = parent.createDiv('bk-pill-row');
+			for (const item of items) {
+				row.createSpan({ cls: 'bk-pill' + (item.startsWith('#') ? ' bk-pill-tag' : ''), text: item });
+			}
+			row.addEventListener('click', (e) => {
 				e.stopPropagation();
-				const input = parent.createEl('input', { cls: 'bk-prop-input', type: 'text' });
-				input.value = val.toString();
-				span.style.display = 'none';
-				input.focus();
-				input.select();
-				const commit = async () => {
-					await writeProp(this.app.vault, card.file, pid, input.value);
-					input.remove();
-					span.style.display = '';
-				};
-				input.addEventListener('blur', commit);
-				input.addEventListener('keydown', (ke) => {
-					if (ke.key === 'Enter') { ke.preventDefault(); commit(); }
-					if (ke.key === 'Escape') { input.remove(); span.style.display = ''; }
+				this.editPropInline(parent, row, items.join(', '), 'text', async (newVal) => {
+					const list = newVal.split(',').map(s => s.trim()).filter(Boolean);
+					await writeProp(this.app, card.file, pid, list);
 				});
+			});
+		} else if (val instanceof TagValue) {
+			const span = parent.createSpan({ cls: 'bk-pill bk-pill-tag', text: val.toString() });
+			span.addEventListener('click', (e) => {
+				e.stopPropagation();
+				this.editPropInline(parent, span, val.toString(), 'text', async (newVal) => {
+					await writeProp(this.app, card.file, pid, newVal);
+				});
+			});
+		} else if (val instanceof StringValue || val instanceof NumberValue || val instanceof DateValue) {
+			const raw = val.toString();
+			const isDate = val instanceof DateValue;
+			const hasTime = isDate && raw.includes('T');
+			const span = parent.createSpan({ cls: 'bk-prop-val', text: raw });
+			span.addEventListener('click', (e) => {
+				e.stopPropagation();
+				this.editPropInline(
+					parent, span,
+					isDate ? raw.slice(0, hasTime ? 16 : 10) : raw,
+					isDate ? (hasTime ? 'datetime-local' : 'date') : 'text',
+					async (newVal) => { await writeProp(this.app, card.file, pid, newVal); },
+				);
 			});
 		} else {
 			parent.createSpan({ cls: 'bk-prop-val', text: val.toString() });
 		}
+	}
+
+	/** Swap a display element for a temporary input; Enter/blur commits once, Escape cancels. */
+	private editPropInline(
+		parent: HTMLElement,
+		display: HTMLElement,
+		initial: string,
+		inputType: string,
+		onCommit: (value: string) => Promise<void>,
+	) {
+		const input = parent.createEl('input', { cls: 'bk-prop-input', type: inputType });
+		input.value = initial;
+		display.style.display = 'none';
+		input.focus();
+		if (inputType === 'text') input.select();
+		let settled = false;
+		const finish = () => {
+			input.remove();
+			display.style.display = '';
+		};
+		const commit = async () => {
+			if (settled) return;
+			settled = true;
+			await onCommit(input.value);
+			finish();
+		};
+		const cancel = () => {
+			if (settled) return;
+			settled = true;
+			finish();
+		};
+		input.addEventListener('blur', () => void commit());
+		input.addEventListener('keydown', (ke) => {
+			if (ke.key === 'Enter') { ke.preventDefault(); void commit(); }
+			if (ke.key === 'Escape') { ke.preventDefault(); cancel(); }
+		});
 	}
 
 	private showCardMenu(e: MouseEvent, card: KanbanCard) {
@@ -759,93 +785,151 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 		menu.showAtMouseEvent(e);
 	}
 
-	// ── DnD helpers ─────────────────────────────────────────────────────────
+	// ── DnD handlers (SortableJS) ───────────────────────────────────────────
 
-	private positionCardDropIndicator(e: DragEvent, body: HTMLElement) {
-		if (!this.dropIndicator) {
-			this.dropIndicator = document.createElement('div');
-			this.dropIndicator.className = 'bk-drop-line';
-		}
-		const cards = Array.from(body.querySelectorAll('.bk-card')) as HTMLElement[];
-		let before: HTMLElement | null = null;
-		for (const c of cards) {
-			const rect = c.getBoundingClientRect();
-			if (e.clientY < rect.top + rect.height / 2) { before = c; break; }
-		}
-		if (before) body.insertBefore(this.dropIndicator, before);
-		else body.appendChild(this.dropIndicator);
-	}
+	private async handleCardDrop(evt: Sortable.SortableEvent) {
+		this.isDragging = false;
+		try {
+			const cardId = (evt.item as HTMLElement).dataset.cardId;
+			const fromColEl = evt.from.closest('.bk-col') as HTMLElement | null;
+			const toColEl = evt.to.closest('.bk-col') as HTMLElement | null;
+			if (!cardId || !fromColEl || !toColEl) return;
 
-	private removeCardDropIndicator() {
-		this.dropIndicator?.parentNode?.removeChild(this.dropIndicator);
-	}
+			const fromColKey = fromColEl.dataset.colKey ?? '';
+			const fromSub = fromColEl.dataset.subgroupKey ?? '';
+			const toColKey = toColEl.dataset.colKey ?? '';
+			const toSub = toColEl.dataset.subgroupKey ?? '';
+			const fromBucket = `${fromSub}||${fromColKey}`;
+			const toBucket = `${toSub}||${toColKey}`;
 
-	private positionColDropIndicator(e: DragEvent, board: HTMLElement) {
-		if (!this.colDropIndicator) {
-			this.colDropIndicator = document.createElement('div');
-			this.colDropIndicator.className = 'bk-col-drop-line';
-		}
-		const cols = Array.from(board.querySelectorAll('.bk-col')) as HTMLElement[];
-		let before: HTMLElement | null = null;
-		for (const c of cols) {
-			const rect = c.getBoundingClientRect();
-			if (e.clientX < rect.left + rect.width / 2) { before = c; break; }
-		}
-		if (before) board.insertBefore(this.colDropIndicator, before);
-		else board.appendChild(this.colDropIndicator);
-	}
+			const idsIn = (el: HTMLElement) =>
+				(Array.from(el.querySelectorAll(':scope > .bk-card:not(.bk-ghost-card)')) as HTMLElement[])
+					.map(c => c.dataset.cardId ?? '')
+					.filter(Boolean);
 
-	private removeColDropIndicator() {
-		this.colDropIndicator?.parentNode?.removeChild(this.colDropIndicator);
-	}
+			// Persist manual order BEFORE any frontmatter write triggers a Bases
+			// refresh, so the re-render agrees with the DOM Sortable produced.
+			const order = this.getManualCardOrder();
+			order[toBucket] = idsIn(evt.to);
+			if (fromBucket !== toBucket) order[fromBucket] = idsIn(evt.from);
+			const newOrderInTarget = order[toBucket];
+			await this.setManualCardOrder(order);
 
-	private async applyColReorder(fromKey: string, toKey: string) {
-		const order = this.getColumnOrder();
-		const fromIdx = order.indexOf(fromKey);
-		const toIdx = order.indexOf(toKey);
-		if (fromIdx === -1 || toIdx === -1) return;
-		const newOrder = [...order];
-		newOrder.splice(fromIdx, 1);
-		newOrder.splice(toIdx, 0, fromKey);
-		await this.setColumnOrder(newOrder);
-	}
+			if (fromBucket !== toBucket) {
+				await this.moveCard(cardId, toColKey, toSub, fromSub);
+			}
 
-	private async reorderCard(cardId: string, body: HTMLElement, bucketKey: string) {
-		const cards = Array.from(body.querySelectorAll('.bk-card')) as HTMLElement[];
-		const indicatorIdx = this.dropIndicator
-			? Array.from(body.children).indexOf(this.dropIndicator)
-			: cards.length;
-		this.removeCardDropIndicator();
-
-		const ids = cards.map(c => c.dataset.cardId ?? '').filter(Boolean);
-		const fromIdx = ids.indexOf(cardId);
-		if (fromIdx === -1) return;
-
-		const before = cards.slice(0, indicatorIdx).filter(c => c !== this.dropIndicator);
-		let toIdx = before.length;
-		if (toIdx > fromIdx) toIdx--;
-		if (fromIdx === toIdx) return;
-
-		ids.splice(fromIdx, 1);
-		ids.splice(toIdx, 0, cardId);
-
-		const order = this.getManualCardOrder();
-		order[bucketKey] = ids;
-		await this.setManualCardOrder(order);
-
-		const sortProp = this.getSortOrderProp();
-		if (sortProp) {
-			for (let i = 0; i < ids.length; i++) {
-				const file = this.app.vault.getFileByPath(ids[i]);
-				if (file) {
-					await writeProp(this.app.vault, file, sortProp, String(i * 10));
+			const sortProp = this.getSortOrderProp();
+			if (sortProp) {
+				for (let i = 0; i < newOrderInTarget.length; i++) {
+					const file = this.app.vault.getFileByPath(newOrderInTarget[i]);
+					if (file) await writeProp(this.app, file, sortProp, i * 10);
 				}
+			}
+		} finally {
+			if (this.pendingRefresh) {
+				this.pendingRefresh = false;
+				await this.onDataUpdated();
 			}
 		}
 	}
 
-	private createKanbanCard(_colKey: string) {
-		new QuickAddModal(this.app, this.plugin.settings, this.plugin).open();
+	private async handleColumnDrop(evt: Sortable.SortableEvent) {
+		this.isDragging = false;
+		try {
+			const item = evt.item as HTMLElement;
+			const key = item.dataset.colKey;
+			if (!key) return;
+
+			// Derive the new position from the dragged column's DOM neighbors and
+			// splice it into the saved order, preserving hidden columns' slots.
+			const domCols = Array.from(evt.to.querySelectorAll(':scope > .bk-col')) as HTMLElement[];
+			const idx = domCols.indexOf(item);
+			const prevKey = idx > 0 ? domCols[idx - 1].dataset.colKey : undefined;
+			const nextKey = idx < domCols.length - 1 ? domCols[idx + 1].dataset.colKey : undefined;
+
+			const order = this.getColumnOrder().filter(k => k !== key);
+			let insertAt = order.length;
+			if (prevKey !== undefined && order.indexOf(prevKey) !== -1) insertAt = order.indexOf(prevKey) + 1;
+			else if (nextKey !== undefined && order.indexOf(nextKey) !== -1) insertAt = order.indexOf(nextKey);
+			order.splice(insertAt, 0, key);
+			await this.setColumnOrder(order);
+		} finally {
+			if (this.pendingRefresh) {
+				this.pendingRefresh = false;
+				await this.onDataUpdated();
+			}
+		}
+	}
+
+	// ── inline card creation ────────────────────────────────────────────────
+
+	private showGhostCard(body: HTMLElement, colKey: string, subgroupKey: string, initialText = '') {
+		// Only one ghost at a time across the whole board
+		this.wrap.querySelectorAll('.bk-ghost-card').forEach(el => el.remove());
+		this.pendingGhost = { colKey, subgroupKey, text: initialText };
+
+		const ghost = body.createDiv('bk-card bk-ghost-card');
+		const input = ghost.createEl('input', { cls: 'bk-ghost-input', type: 'text', placeholder: 'Note title…' });
+		input.value = initialText;
+		// Mirror text so a mid-typing re-render can restore the ghost
+		input.addEventListener('input', () => { if (this.pendingGhost) this.pendingGhost.text = input.value; });
+
+		let settled = false;
+		const cancel = () => {
+			if (settled) return;
+			settled = true;
+			this.pendingGhost = null;
+			ghost.remove();
+		};
+		const commit = async () => {
+			if (settled) return;
+			const title = input.value.trim();
+			if (!title) { cancel(); return; }
+			settled = true;
+			this.pendingGhost = null;
+			ghost.remove();
+			await this.commitGhost(colKey, subgroupKey, title);
+		};
+
+		input.addEventListener('keydown', (e) => {
+			if (e.key === 'Enter') { e.preventDefault(); void commit(); }
+			if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+		});
+		input.addEventListener('blur', () => void commit());
+
+		ghost.scrollIntoView({ block: 'nearest' });
+		input.focus();
+	}
+
+	private async commitGhost(colKey: string, subgroupKey: string, title: string) {
+		const folder = ((this.config.get('newNoteFolder') as string) ?? '').trim();
+
+		const fm: Record<string, unknown> = {};
+		const groupByPid = this.getGroupByPropId();
+		if (groupByPid && colKey !== NULL_KEY) {
+			fm[parsePropertyId(groupByPid).name] = colKey;
+		} else if (!groupByPid) {
+			new Notice('No Group By set on this base — creating the note without a column value.');
+		}
+		const subgroupPid = this.config.getAsPropertyId('subgroupProperty');
+		if (subgroupPid && subgroupKey && subgroupKey !== NULL_KEY) {
+			fm[parsePropertyId(subgroupPid).name] = subgroupKey;
+		}
+		// Stub out the properties visible in this view so they show up in the new note
+		for (const pid of this.config.getOrder()) {
+			const { type, name } = parsePropertyId(pid);
+			if (type !== 'note') continue;
+			if (name === 'name' || name in fm) continue;
+			fm[name] = '';
+		}
+
+		try {
+			await createNoteInFolder(this.app, folder, title, fm);
+		} catch (err) {
+			console.error(err);
+			new Notice('Failed to create note. Check the console for details.');
+		}
 	}
 
 	private async moveCard(
@@ -862,11 +946,11 @@ export class BaseKanbanView extends BasesView implements HoverParent {
 		const file = this.app.vault.getFileByPath(cardId);
 		if (!file) return;
 		try {
-			await writeProp(this.app.vault, file, groupByPid, newColKey === NULL_KEY ? '' : newColKey);
+			await writeProp(this.app, file, groupByPid, newColKey === NULL_KEY ? '' : newColKey);
 			if (newSubgroupKey !== srcSubgroupKey) {
 				const subgroupPid = this.config.getAsPropertyId('subgroupProperty');
 				if (subgroupPid) {
-					await writeProp(this.app.vault, file, subgroupPid, newSubgroupKey === NULL_KEY ? '' : newSubgroupKey);
+					await writeProp(this.app, file, subgroupPid, newSubgroupKey === NULL_KEY ? '' : newSubgroupKey);
 				}
 			}
 		} catch (err) {

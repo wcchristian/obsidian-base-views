@@ -2,6 +2,8 @@ import { BasesView, TFile, Notice, QueryController, HoverParent, HoverPopover, K
 import BaseViewsPlugin from './main';
 import { QuickAddModal } from './quick-add-modal';
 import { AUTO_PALETTE } from './util';
+import { writeProp } from './frontmatter';
+import { createNoteInFolder } from './create-note';
 
 export const VIEW_TYPE_BASE_CALENDAR = 'base-calendar-view';
 
@@ -728,7 +730,7 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 			cb.onclick = async (e) => {
 				e.stopPropagation();
 				const newVal = !seg.ev.done;
-				await this.writeProp(seg.ev.file, this.doneProp!, newVal ? 'true' : 'false');
+				await writeProp(this.app, seg.ev.file, this.doneProp!, newVal);
 				seg.ev.done = newVal;
 				bar.toggleClass('bc-md-done', newVal);
 				cb.toggleClass('bc-md-check-on', newVal);
@@ -783,7 +785,7 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 				e.preventDefault();
 				e.stopPropagation();
 				const newVal = !ev.done;
-				await this.writeProp(ev.file, this.doneProp!, newVal ? 'true' : 'false');
+				await writeProp(this.app, ev.file, this.doneProp!, newVal);
 				ev.done = newVal;
 				chip.toggleClass('bc-chip-done', newVal);
 				cb.toggleClass('bc-check-on', newVal);
@@ -971,52 +973,47 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 			tog.onclick = async (e) => {
 				e.stopPropagation();
 				const newVal = !checked;
-				await this.writeProp(ev.file, pid, newVal ? 'true' : 'false');
+				await writeProp(this.app, ev.file, pid, newVal);
 				tog.toggleClass('bc-toggle-on', newVal);
 			};
 		} else if (val instanceof StringValue || val instanceof NumberValue || val instanceof TagValue || val instanceof DateValue) {
 			const span = parent.createSpan({ cls: 'bc-prop-val', text: val.toString() });
-			span.onclick = async (e) => {
+			span.onclick = (e) => {
 				e.stopPropagation();
-				const input = parent.createEl('input', { cls: 'bc-prop-input', value: val.toString(), type: 'text' });
+				const raw = val.toString();
+				const isDate = val instanceof DateValue;
+				const hasTime = isDate && raw.includes('T');
+				const input = parent.createEl('input', {
+					cls: 'bc-prop-input',
+					type: isDate ? (hasTime ? 'datetime-local' : 'date') : 'text',
+				});
+				input.value = isDate ? raw.slice(0, hasTime ? 16 : 10) : raw;
 				span.style.display = 'none';
 				input.focus();
-				input.select();
+				if (!isDate) input.select();
+				let settled = false;
 				const commit = async () => {
-					await this.writeProp(ev.file, pid, input.value);
+					if (settled) return;
+					settled = true;
+					await writeProp(this.app, ev.file, pid, input.value);
 					input.remove();
 					span.style.display = '';
 				};
-				input.onblur = commit;
-				input.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); commit(); } if (e.key === 'Escape') { input.remove(); span.style.display = ''; } };
+				const cancel = () => {
+					if (settled) return;
+					settled = true;
+					input.remove();
+					span.style.display = '';
+				};
+				input.onblur = () => void commit();
+				input.onkeydown = ke => {
+					if (ke.key === 'Enter') { ke.preventDefault(); void commit(); }
+					if (ke.key === 'Escape') { ke.preventDefault(); cancel(); }
+				};
 			};
 		} else {
 			parent.createSpan({ cls: 'bc-prop-val', text: val.toString() });
 		}
-	}
-
-	private async writeProp(file: TFile, pid: BasesPropertyId, raw: string) {
-		const content = await this.app.vault.read(file);
-		const fm = content.match(/^---\n([\s\S]*?)\n---/);
-		const { name } = parsePropertyId(pid);
-
-		if (!fm) {
-			await this.app.vault.modify(file, `---\n${name}: ${raw}\n---\n\n${content}`);
-			return;
-		}
-
-		const fmText = fm[1];
-		const key = name.includes(' ') || name.includes('-') ? `"${name}"` : name;
-		const re = new RegExp(`(${key}:\\s*)[^\\n]+`);
-
-		let newFm: string;
-		if (re.test(fmText)) {
-			newFm = fmText.replace(re, `$1${raw}`);
-		} else {
-			newFm = `${key}: ${raw}\n${fmText}`;
-		}
-
-		await this.app.vault.modify(file, content.replace(/^---\n[\s\S]*?\n---/, `---\n${newFm}\n---`));
 	}
 
 	private positionDropIndicator(e: DragEvent, evList: HTMLElement) {
@@ -1098,7 +1095,7 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 				if (ev) {
 					try {
 						const sortPropId = `note.${this.sortOrderProp}` as BasesPropertyId;
-						await this.writeProp(ev.file, sortPropId, String(i * 10));
+						await writeProp(this.app, ev.file, sortPropId, i * 10);
 					} catch (err) {
 						console.error('Failed to write sort order prop:', err);
 					}
@@ -1114,11 +1111,11 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 		if (!ev) return;
 		const ds = DK(newDate);
 		try {
-			if (this.dateProp) await this.writeProp(ev.file, this.dateProp, ds);
+			if (this.dateProp) await writeProp(this.app, ev.file, this.dateProp, ds);
 			if (ev.end && this.endProp) {
 				const delta = newDate.getTime() - ev.start.getTime();
 				const newEnd = new Date(ev.end.getTime() + delta);
-				await this.writeProp(ev.file, this.endProp, DK(newEnd));
+				await writeProp(this.app, ev.file, this.endProp, DK(newEnd));
 				ev.end = newEnd;
 			}
 			ev.start = newDate;
@@ -1132,6 +1129,16 @@ export class BaseCalendarView extends BasesView implements HoverParent {
 	}
 
 	private createNote(startDate: Date, _endDate: Date | null) {
+		const folder = ((this.config.get('newNoteFolder') as string) ?? '').trim();
+		if (folder) {
+			// Instant create in the configured folder with the date prefilled.
+			const fm: Record<string, unknown> = {};
+			if (this.dateProp) fm[parsePropertyId(this.dateProp).name] = DK(startDate);
+			createNoteInFolder(this.app, folder, `Note ${DK(startDate)}`, fm)
+				.then(f => new Notice(`Created "${f.basename}"`))
+				.catch(err => { console.error(err); new Notice('Failed to create note'); });
+			return;
+		}
 		new QuickAddModal(this.app, this.plugin.settings, this.plugin, `Note ${DK(startDate)}`).open();
 	}
 

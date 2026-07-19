@@ -16,7 +16,7 @@ export function attachOverflowTitle(el: HTMLElement, text: string): void {
 }
 
 export class FolderSuggest extends AbstractInputSuggest<string> {
-	constructor(app: App, inputEl: HTMLInputElement) {
+	constructor(app: App, private inputEl: HTMLInputElement) {
 		super(app, inputEl);
 	}
 	getSuggestions(query: string): string[] {
@@ -35,14 +35,14 @@ export class FolderSuggest extends AbstractInputSuggest<string> {
 		el.textContent = value;
 	}
 	selectSuggestion(value: string): void {
-		(this.inputEl as HTMLInputElement).value = value;
+		this.inputEl.value = value;
 		this.inputEl.dispatchEvent(new Event('input'));
 		this.close();
 	}
 }
 
 export class FileSuggest extends AbstractInputSuggest<string> {
-	constructor(app: App, inputEl: HTMLInputElement) {
+	constructor(app: App, private inputEl: HTMLInputElement) {
 		super(app, inputEl);
 	}
 	getSuggestions(query: string): string[] {
@@ -56,7 +56,7 @@ export class FileSuggest extends AbstractInputSuggest<string> {
 		el.textContent = value;
 	}
 	selectSuggestion(value: string): void {
-		(this.inputEl as HTMLInputElement).value = value;
+		this.inputEl.value = value;
 		this.inputEl.dispatchEvent(new Event('input'));
 		this.close();
 	}

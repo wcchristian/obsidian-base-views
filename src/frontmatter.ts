@@ -1,25 +1,15 @@
-import { TFile, BasesPropertyId, parsePropertyId, Vault } from 'obsidian';
+import { App, TFile, BasesPropertyId, parsePropertyId } from 'obsidian';
 
-export async function writeProp(vault: Vault, file: TFile, pid: BasesPropertyId, raw: string): Promise<void> {
-	const content = await vault.read(file);
-	const fm = content.match(/^---\n([\s\S]*?)\n---/);
+export type PropWriteValue = string | number | boolean | string[] | null;
+
+/**
+ * Write a single frontmatter property using Obsidian's canonical YAML writer.
+ * An empty string clears the value (serialized as an empty/null YAML entry),
+ * matching how Bases treats "no value" when grouping.
+ */
+export async function writeProp(app: App, file: TFile, pid: BasesPropertyId, value: PropWriteValue): Promise<void> {
 	const { name } = parsePropertyId(pid);
-
-	if (!fm) {
-		await vault.modify(file, `---\n${name}: ${raw}\n---\n\n${content}`);
-		return;
-	}
-
-	const fmText = fm[1];
-	const key = name.includes(' ') || name.includes('-') ? `"${name}"` : name;
-	const re = new RegExp(`(${key}:\\s*)[^\\n]+`);
-
-	let newFm: string;
-	if (re.test(fmText)) {
-		newFm = fmText.replace(re, `$1${raw}`);
-	} else {
-		newFm = `${key}: ${raw}\n${fmText}`;
-	}
-
-	await vault.modify(file, content.replace(/^---\n[\s\S]*?\n---/, `---\n${newFm}\n---`));
+	await app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+		fm[name] = value === '' ? null : value;
+	});
 }

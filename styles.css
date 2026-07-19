@@ -904,10 +904,6 @@
   transition: opacity 0.15s;
 }
 
-.bk-col-dragging {
-  opacity: 0.45;
-}
-
 /* ── Collapsed column ────────────────────────────────────────── */
 .bk-col-collapsed {
   min-width: 36px;
@@ -939,11 +935,6 @@
 
 .bk-col-collapsed .bk-kebab {
   flex-shrink: 0;
-}
-
-.bk-col.bk-drop {
-  outline: 2px solid var(--interactive-accent);
-  outline-offset: -2px;
 }
 
 .bk-col-hdr {
@@ -1002,9 +993,22 @@
   background: color-mix(in srgb, var(--interactive-accent) 4%, var(--background-primary));
 }
 
-.bk-card.bk-dragging {
-  opacity: 0.4;
+/* SortableJS: placeholder left in the list while dragging */
+.bk-card.bk-card-ghost {
+  opacity: 0.35;
+  border-style: dashed;
+  border-color: var(--interactive-accent);
+}
+
+/* SortableJS: the element following the cursor */
+.bk-card.sortable-drag {
+  opacity: 1 !important;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
   cursor: grabbing;
+}
+
+.bk-col.bk-col-ghost {
+  opacity: 0.4;
 }
 
 .bk-card-done {
@@ -1058,10 +1062,11 @@
 }
 
 .bk-card-link {
-  font-size: var(--font-ui-small);
+  font-size: var(--font-ui-medium);
   color: var(--text-normal);
   text-decoration: none;
   font-weight: 600;
+  line-height: 1.3;
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1078,7 +1083,9 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  margin-top: 6px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--background-modifier-border);
 }
 
 .bk-prop-row {
@@ -1090,7 +1097,7 @@
 }
 
 .bk-prop-label {
-  color: var(--text-muted);
+  color: var(--text-faint);
 }
 
 .bk-prop-val {
@@ -1187,23 +1194,77 @@
   background: var(--background-modifier-hover);
 }
 
-/* ── Drop indicators ─────────────────────────────────────────── */
-.bk-drop-line {
-  height: 2px;
-  background: var(--interactive-accent);
-  border-radius: 1px;
-  margin: 2px 0;
-  pointer-events: none;
+/* ── Cover image ─────────────────────────────────────────────── */
+.bk-card-cover {
+  margin: -8px -10px 8px;
+  height: 110px;
+  overflow: hidden;
+  border-radius: 6px 6px 0 0;
 }
 
-.bk-col-drop-line {
-  width: 2px;
-  align-self: stretch;
-  background: var(--interactive-accent);
-  border-radius: 1px;
-  margin: 0 2px;
-  pointer-events: none;
-  min-height: 60px;
+.bk-card-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* ── Pills (tags & lists) ────────────────────────────────────── */
+.bk-pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  cursor: text;
+}
+
+.bk-pill {
+  background: var(--background-modifier-hover);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: var(--font-ui-smaller);
+  line-height: 1.6;
+  color: var(--text-normal);
+  cursor: text;
+  white-space: nowrap;
+}
+
+.bk-pill-tag {
+  background: var(--tag-background, color-mix(in srgb, var(--interactive-accent) 12%, transparent));
+  color: var(--tag-color, var(--interactive-accent));
+}
+
+/* ── Ghost card (inline add) ─────────────────────────────────── */
+.bk-ghost-card {
+  border-style: dashed;
+  border-color: var(--interactive-accent);
+}
+
+.bk-ghost-input {
+  width: 100%;
+  border: none;
+  background: transparent;
+  font-size: var(--font-ui-medium);
+  font-weight: 600;
+  color: var(--text-normal);
+  outline: none;
+  padding: 0;
+}
+
+.bk-ghost-input::placeholder {
+  color: var(--text-faint);
+  font-weight: 400;
+}
+
+/* ── Collapsed column drop target ────────────────────────────── */
+.bk-col-body-collapsed {
+  flex: 1;
+  min-height: 48px;
+  padding: 0;
+}
+
+/* Cards dragged over a collapsed column shouldn't blow out its width */
+.bk-col-collapsed .bk-card {
+  display: none;
 }
 
 /* ── Background image ────────────────────────────────────────── */

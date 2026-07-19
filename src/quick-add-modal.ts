@@ -1,20 +1,10 @@
-import { App, Modal, Notice, Vault, normalizePath } from 'obsidian';
+import { App, Modal, Notice, normalizePath } from 'obsidian';
 import { BaseViewsSettings, QuickAddProfile, QuickAddProp } from './settings';
 import BaseViewsPlugin from './main';
+import { ensureFolder } from './create-note';
 
 const DK = (d: Date): string => d.toISOString().slice(0, 10);
 const DKT = (d: Date): string => d.toISOString().slice(0, 16);
-
-async function ensureFolder(vault: Vault, folderPath: string): Promise<void> {
-	const parts = folderPath.split('/').filter(Boolean);
-	let built = '';
-	for (const part of parts) {
-		built = built ? `${built}/${part}` : part;
-		if (!vault.getAbstractFileByPath(built)) {
-			await vault.createFolder(built);
-		}
-	}
-}
 
 export class QuickAddModal extends Modal {
 	constructor(
@@ -22,6 +12,7 @@ export class QuickAddModal extends Modal {
 		private settings: BaseViewsSettings,
 		private plugin: BaseViewsPlugin,
 		private initialTitle?: string,
+		private folderOverride?: string,
 	) {
 		super(app);
 	}
@@ -159,7 +150,7 @@ export class QuickAddModal extends Modal {
 			if (e.key === 'Enter') { e.preventDefault(); submit(); }
 		};
 		titleInput.addEventListener('keydown', onEnter);
-		propInputEls.forEach(({ input }) => input.addEventListener('keydown', onEnter));
+		propInputEls.forEach(({ input }) => (input as HTMLElement).addEventListener('keydown', onEnter));
 
 		const btnRow = contentEl.createDiv({ cls: 'modal-button-container' });
 		const ok = btnRow.createEl('button', { text: 'Create note', cls: 'mod-cta' });
@@ -203,7 +194,7 @@ export class QuickAddModal extends Modal {
 	): Promise<void> {
 		try {
 			const safeTitle = title.replace(/[\\/:*?"<>|]/g, '-');
-			const folder = profile.folder.trim();
+			const folder = this.folderOverride?.trim() || profile.folder.trim();
 
 			let filePath = folder
 				? normalizePath(`${folder}/${safeTitle}.md`)

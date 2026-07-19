@@ -1,7 +1,7 @@
 import {
   Plugin, BasesView, QueryController,
   BasesAllOptions, BasesDropdownOption, BasesSliderOption,
-  BasesTextOption, BasesMultitextOption, BasesToggleOption,
+  BasesTextOption, BasesMultitextOption, BasesToggleOption, BasesFolderOption,
 } from 'obsidian';
 import { BaseCalendarView, VIEW_TYPE_BASE_CALENDAR } from './calendar-view';
 import { BaseKanbanView, VIEW_TYPE_BASE_KANBAN } from './kanban-view';
@@ -48,6 +48,18 @@ export default class BaseViewsPlugin extends Plugin {
             { type: 'property', displayName: 'End date property', key: 'endDateProperty' },
             { type: 'property', displayName: 'Done property', key: 'doneProperty' },
             { type: 'property', displayName: 'Sort order property', key: 'sortOrderProperty' },
+          ],
+        },
+        {
+          type: 'group',
+          displayName: 'New notes',
+          items: [
+            {
+              type: 'folder',
+              displayName: 'New note folder',
+              key: 'newNoteFolder',
+              placeholder: 'Vault root',
+            } as BasesFolderOption,
           ],
         },
         {
@@ -173,6 +185,19 @@ export default class BaseViewsPlugin extends Plugin {
             { type: 'property', displayName: 'Sort order property', key: 'sortOrderProperty' },
             { type: 'property', displayName: 'Card title property', key: 'cardTitleProperty' },
             { type: 'property', displayName: 'Done property', key: 'doneProperty' },
+            { type: 'property', displayName: 'Cover image property', key: 'coverImageProperty' },
+          ],
+        },
+        {
+          type: 'group',
+          displayName: 'New notes',
+          items: [
+            {
+              type: 'folder',
+              displayName: 'New note folder',
+              key: 'newNoteFolder',
+              placeholder: 'Vault root',
+            } as BasesFolderOption,
           ],
         },
         {
@@ -305,6 +330,18 @@ export default class BaseViewsPlugin extends Plugin {
         },
         {
           type: 'group',
+          displayName: 'New notes',
+          items: [
+            {
+              type: 'folder',
+              displayName: 'New note folder',
+              key: 'newNoteFolder',
+              placeholder: 'Vault root',
+            } as BasesFolderOption,
+          ],
+        },
+        {
+          type: 'group',
           displayName: 'Display',
           items: [
             {
@@ -412,6 +449,18 @@ export default class BaseViewsPlugin extends Plugin {
           items: [
             { type: 'property', displayName: 'Done property', key: 'doneProperty' },
             { type: 'property', displayName: 'Sort order property', key: 'sortOrderProperty' },
+          ],
+        },
+        {
+          type: 'group',
+          displayName: 'New notes',
+          items: [
+            {
+              type: 'folder',
+              displayName: 'New note folder',
+              key: 'newNoteFolder',
+              placeholder: 'Vault root',
+            } as BasesFolderOption,
           ],
         },
         {
